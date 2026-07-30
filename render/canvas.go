@@ -23,10 +23,22 @@ type PDFCanvas struct {
 	size    core.Size
 	buf     bytes.Buffer
 
+	// page is the index this canvas will occupy once closed, needed so that
+	// annotations can be attached to the right page.
+	page int
+
 	// depth tracks unbalanced Save calls so Close can detect a container that
 	// forgot to Restore, which would otherwise corrupt the graphics stack
 	// silently and misplace everything after it.
 	depth int
+
+	// ctm mirrors the transform built up by Translate and Rotate, excluding the
+	// page-level Y flip. Drawing does not need it — the reader applies the cm
+	// operators — but annotations are positioned in absolute page coordinates and
+	// have no operator stream to live in, so their geometry has to be resolved
+	// here.
+	ctm   matrix
+	stack []matrix
 
 	err error
 
@@ -34,10 +46,18 @@ type PDFCanvas struct {
 }
 
 func newPDFCanvas(b *Builder, size core.Size) *PDFCanvas {
-	c := &PDFCanvas{builder: b, size: size}
+	c := &PDFCanvas{
+		builder: b,
+		size:    size,
+		page:    b.PageCount(),
+		ctm:     identity(),
+	}
 
 	// Flip the Y axis so layout coordinates can be emitted verbatim. After this
 	// transform, (0,0) is the top-left corner and positive Y runs down the page.
+	//
+	// The flip is deliberately left out of ctm: that tracks layout space, and
+	// converting to PDF space happens once, in pageRect.
 	c.op("%s 0 0 %s 0 %s cm", pdfobj.Num(1), pdfobj.Num(-1), pdfobj.Num(size.Height))
 	return c
 }
@@ -50,6 +70,7 @@ func (c *PDFCanvas) op(format string, args ...any) {
 
 func (c *PDFCanvas) Save() {
 	c.depth++
+	c.stack = append(c.stack, c.ctm)
 	c.op("q")
 }
 
@@ -59,6 +80,8 @@ func (c *PDFCanvas) Restore() {
 		return
 	}
 	c.depth--
+	c.ctm = c.stack[len(c.stack)-1]
+	c.stack = c.stack[:len(c.stack)-1]
 	c.op("Q")
 }
 
@@ -66,6 +89,7 @@ func (c *PDFCanvas) Translate(p core.Position) {
 	if p.X == 0 && p.Y == 0 {
 		return
 	}
+	c.ctm = translation(p.X, p.Y).mul(c.ctm)
 	c.op("1 0 0 1 %s %s cm", pdfobj.Num(p.X), pdfobj.Num(p.Y))
 }
 
@@ -73,6 +97,8 @@ func (c *PDFCanvas) Rotate(degrees float64) {
 	if math.Mod(degrees, 360) == 0 {
 		return
 	}
+	c.ctm = rotation(degrees).mul(c.ctm)
+
 	rad := degrees * math.Pi / 180
 	cos, sin := math.Cos(rad), math.Sin(rad)
 
@@ -81,6 +107,54 @@ func (c *PDFCanvas) Rotate(degrees float64) {
 	// rotation expect.
 	c.op("%s %s %s %s 0 0 cm",
 		pdfobj.Num(cos), pdfobj.Num(sin), pdfobj.Num(-sin), pdfobj.Num(cos))
+}
+
+// pageRect converts a local rectangle into the absolute PDF-space rectangle an
+// annotation needs.
+//
+// Two conversions happen here. The tracked transform maps local coordinates into
+// layout space, and then the Y axis is flipped: layout space grows downwards from
+// the top of the page while PDF space grows upwards from the bottom, so the top
+// and bottom edges swap as well as move.
+func (c *PDFCanvas) pageRect(pos core.Position, size core.Size) [4]float64 {
+	x0, top, x1, bottom := c.ctm.bounds(pos, size)
+
+	return [4]float64{
+		x0, c.size.Height - bottom,
+		x1, c.size.Height - top,
+	}
+}
+
+// Link records a clickable rectangle.
+func (c *PDFCanvas) Link(pos core.Position, size core.Size, target core.LinkTarget) {
+	if !target.Valid() || size.Width <= 0 || size.Height <= 0 {
+		return
+	}
+	c.builder.addLink(c.page, c.pageRect(pos, size), target)
+}
+
+// Destination registers a named anchor.
+//
+// The point is nudged up by a little so that a reader scrolling to it shows the
+// content rather than clipping its top edge against the window.
+func (c *PDFCanvas) Destination(name string, pos core.Position) {
+	if name == "" {
+		return
+	}
+	at := c.ctm.apply(pos)
+	c.builder.addDestination(name, c.page, c.size.Height-at.Y+destinationInset)
+}
+
+// destinationInset is how far above an anchor a reader is scrolled, so the
+// content sits inside the window instead of flush against its top edge.
+const destinationInset = 8
+
+// Bookmark records an outline entry.
+func (c *PDFCanvas) Bookmark(title string, level int, destination string) {
+	if title == "" || destination == "" {
+		return
+	}
+	c.builder.addBookmark(title, level, destination)
 }
 
 func (c *PDFCanvas) ClipRect(pos core.Position, size core.Size) {

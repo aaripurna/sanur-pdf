@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 )
 
 // Ref is a reference to an indirect object, numbered from 1.
@@ -60,8 +61,13 @@ func (d *Dict) SetNum(key string, v float64) *Dict { return d.Set(key, Num(v)) }
 // SetRef sets an indirect-reference entry.
 func (d *Dict) SetRef(key string, r Ref) *Dict { return d.Set(key, r.String()) }
 
-// SetString sets a literal-string entry.
+// SetString sets a literal-string entry, for values that are ASCII by
+// specification such as URIs and dates.
 func (d *Dict) SetString(key, s string) *Dict { return d.Set(key, String(s)) }
+
+// SetTextString sets an entry holding human-readable text, encoded so that
+// non-ASCII characters survive.
+func (d *Dict) SetTextString(key, s string) *Dict { return d.Set(key, TextString(s)) }
 
 // Has reports whether the key is present.
 func (d *Dict) Has(key string) bool {
@@ -148,6 +154,52 @@ func String(s string) string {
 	}
 	b.WriteByte(')')
 	return b.String()
+}
+
+// TextString formats human-readable text: a document title, an author, an
+// outline entry.
+//
+// These are not the same as the strings inside a content stream. A PDF text
+// string is either PDFDocEncoding — near enough Latin-1 — or UTF-16BE introduced
+// by a byte-order mark, and nothing else. Writing Go's UTF-8 through verbatim
+// works only for ASCII and turns every accented character into mojibake: a title
+// of "Café" arrives as "CafÃ©".
+//
+// ASCII is emitted as a literal string because it is readable in the output and
+// costs half the bytes; anything else becomes a UTF-16BE hex string, which covers
+// the whole of Unicode. Latin-1 would cover more than ASCII for fewer bytes, but
+// choosing between three encodings to save a few bytes on a title is not worth
+// the extra path.
+func TextString(s string) string {
+	if isASCII(s) {
+		return String(s)
+	}
+
+	var b strings.Builder
+	b.WriteByte('<')
+	// The byte-order mark is what tells a reader this is UTF-16 rather than
+	// PDFDocEncoding.
+	b.WriteString("FEFF")
+
+	for _, r := range s {
+		// Runes outside the basic multilingual plane need a surrogate pair, which
+		// is what utf16.Encode produces.
+		for _, unit := range utf16.Encode([]rune{r}) {
+			fmt.Fprintf(&b, "%04X", unit)
+		}
+	}
+
+	b.WriteByte('>')
+	return b.String()
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 0x7E || s[i] < 0x20 {
+			return false
+		}
+	}
+	return true
 }
 
 // StringBytes formats already-encoded bytes as a literal string. Text is

@@ -91,10 +91,70 @@ func main() {
 		p.Footer().Element(reportFooter())
 	})
 
+	// --- Sheet zero: title and contents ----------------------------------
+	//
+	// The contents entries link to destinations registered by the Bookmark calls
+	// on the section headings below, which also populate the reader's outline
+	// panel. A link may point forwards: nothing is resolved until every page has
+	// been drawn.
+	doc.Page(func(p *sanur.Page) {
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(26)
+
+			c.Item().PaddingTop(60).Column(func(inner *sanur.ColumnBuilder) {
+				inner.Spacing(6)
+				inner.Item().StyledText("Quarterly Business Review",
+					sanur.TextStyle().Size(26).Bold().Color(ink))
+				inner.Item().StyledText("Q2 2026",
+					sanur.TextStyle().Size(13).Color(muted))
+			})
+
+			c.Item().LineHorizontal(1, hairline)
+
+			c.Item().Column(func(inner *sanur.ColumnBuilder) {
+				inner.Spacing(3)
+				inner.Item().PaddingBottom(6).StyledText("CONTENTS",
+					sanur.TextStyle().Size(8).Bold().Color(muted).LetterSpacing(0.9))
+
+				for _, entry := range []struct{ title, dest string }{
+					{"Performance", "bookmark:Performance"},
+					{"Operating review", "bookmark:Operating review"},
+					{"Appendix A \u00b7 Monthly detail", "bookmark:Appendix A"},
+				} {
+					entry := entry
+					// The whole row is the click target, not just the words, which is
+					// what makes a contents list comfortable to use.
+					inner.Item().LinkTo(entry.dest).PaddingXY(0, 5).
+						BorderBottom(0.5, hairline).
+						Row(func(r *sanur.RowBuilder) {
+							r.RelativeItem(1).StyledText(entry.title,
+								sanur.TextStyle().Size(11).Color(accent))
+							// A guillemet rather than an arrow: WinAnsi has no
+							// arrows, and U+2192 would be substituted with a
+							// question mark.
+							r.AutoItem().AlignMiddle().StyledText("\u00bb",
+								sanur.TextStyle().Size(9).Color(accent))
+						})
+				}
+			})
+
+			c.Item().StyledText(
+				"Section titles also appear in the reader's outline panel. Page "+
+					"numbers are absent from this list on purpose: resolving a "+
+					"destination to a page number during layout is not yet supported.",
+				sanur.TextStyle().Size(8).Color(muted))
+		})
+	})
+
 	// --- Sheet one: dashboard --------------------------------------------
 	doc.Page(func(p *sanur.Page) {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(20)
+
+			// Bookmark registers both an outline entry and a destination, so the
+			// contents list on the title page can aim at the same spot.
+			c.Item().Bookmark("Performance").Element(
+				sectionTitle("Performance"))
 
 			// A four-up tile row. Each tile is a relative item so the row divides
 			// the width evenly however many tiles there are.
@@ -131,8 +191,8 @@ func main() {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(16)
 
-			c.Item().StyledText("Operating review",
-				sanur.TextStyle().Size(19).Bold().Color(ink))
+			c.Item().Bookmark("Operating review").Element(
+				sectionTitle("Operating review"))
 
 			// A pull quote spanning the full width before the columns begin.
 			c.Item().Background(surface).BorderLeft(3, accent).PaddingXY(16, 14).
@@ -183,6 +243,9 @@ func main() {
 
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(14)
+
+			c.Item().BookmarkNamed(0, "Appendix A \u00b7 Monthly detail", "bookmark:Appendix A").
+				Element(sectionTitle("Appendix A \u00b7 Monthly detail"))
 
 			c.Item().StyledText(
 				"A wide table on a landscape sheet. Page size is per definition, so "+
@@ -675,4 +738,9 @@ func rightColumnBody() []string {
 			"quarter of genuine operating leverage since the platform rebuild. CAC " +
 			"payback shortened to 14 months.",
 	}
+}
+
+// sectionTitle is a heading large enough to introduce a sheet.
+func sectionTitle(title string) core.Element {
+	return elements.NewText(title, sanur.TextStyle().Size(19).Bold().Color(ink).Build())
 }

@@ -36,6 +36,14 @@ func (c *DiscardCanvas) DrawLine(core.Position, core.Position, core.Color, float
 func (c *DiscardCanvas) DrawText(string, core.Position, core.TextStyle)             {}
 func (c *DiscardCanvas) DrawImage(core.Image, core.Position, core.Size)             {}
 
+// Links, anchors and bookmarks are discarded along with everything else. The
+// counting pass exists only to learn how many pages there are; collecting
+// annotations here would register every one twice, since the real pass draws the
+// same document again.
+func (c *DiscardCanvas) Link(core.Position, core.Size, core.LinkTarget) {}
+func (c *DiscardCanvas) Destination(string, core.Position)              {}
+func (c *DiscardCanvas) Bookmark(string, int, string)                   {}
+
 // Fail records an error. Failures are still collected during a discarded pass:
 // a font that cannot be embedded or a malformed image is worth reporting before
 // the second pass repeats the same work.

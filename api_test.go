@@ -1038,3 +1038,257 @@ func TestEmptyPathDrawsNothing(t *testing.T) {
 		}
 	}
 }
+
+// --- links and bookmarks ----------------------------------------------------
+
+func TestExternalLinkEmitsAURIAnnotation(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Link("https://example.com/docs").Text("Documentation")
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wants(t, string(data),
+		"/Type /Annot", "/Subtype /Link", "/S /URI",
+		"/URI (https://example.com/docs)",
+		"/Annots [",
+		// A zero border stops readers drawing the black rectangle older tools are
+		// notorious for.
+		"/Border [0 0 0]")
+}
+
+func TestLinkRectangleIsTheAllocatedBoxInPDFSpace(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(core.Size{Width: 600, Height: 800}).Margin(0)
+		// A fixed box at a known offset, so the rectangle can be checked exactly.
+		p.Content().PaddingEach(100, 0, 0, 50).Size(200, 30).
+			Link("https://example.com").Empty()
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Layout puts the box at x 50..250, y 100..130 measured down from the top.
+	// PDF measures up from the bottom of an 800-point page, so y becomes 670..700.
+	wants(t, string(data), "/Rect [50 670 250 700]")
+}
+
+func TestInternalLinkResolvesToItsDestination(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(10)
+			// The link is declared before the anchor it points at, which is the
+			// common case for a table of contents.
+			c.Item().LinkTo("methods").Text("Jump to Methods")
+			c.Item().PageBreak()
+			c.Item().Anchor("methods").Text("Methods")
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wants(t, string(data), "/S /GoTo", "/D [")
+	if strings.Contains(string(data), "/S /URI") {
+		t.Error("an internal link should not become a URI action")
+	}
+	if got := countPages(data); got != 2 {
+		t.Fatalf("page count = %d, want 2", got)
+	}
+}
+
+func TestDanglingInternalLinkIsReported(t *testing.T) {
+	doc := sanur.New()
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(40)
+		p.Content().LinkTo("nowhere").Text("broken")
+	})
+
+	_, err := doc.Bytes()
+	if err == nil {
+		t.Fatal("expected an error for a link to an unregistered destination")
+	}
+	// A dead link is invisible in the output, so the name has to be in the error.
+	for _, want := range []string{"nowhere", "destination"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestDuplicateDestinationIsReported(t *testing.T) {
+	doc := sanur.New()
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Item().Anchor("intro").Text("first")
+			c.Item().Anchor("intro").Text("second")
+		})
+	})
+
+	_, err := doc.Bytes()
+	if err == nil {
+		t.Fatal("expected an error for a reused destination name")
+	}
+	if !strings.Contains(err.Error(), "intro") {
+		t.Errorf("error %q does not name the duplicate", err)
+	}
+}
+
+func TestBookmarksBuildAnOutline(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(8)
+			c.Item().Bookmark("Introduction").Text("Introduction")
+			c.Item().BookmarkAt(1, "Background").Text("Background")
+			c.Item().BookmarkAt(1, "Scope").Text("Scope")
+			c.Item().Bookmark("Results").Text("Results")
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := string(data)
+	wants(t, text,
+		"/Type /Outlines",
+		"/Outlines ",
+		// The reader is asked to open with the outline panel showing, which is the
+		// point of having one.
+		"/PageMode /UseOutlines",
+		"/Title (Introduction)", "/Title (Background)",
+		"/Title (Scope)", "/Title (Results)")
+
+	// Two top-level entries, each pointing at the other.
+	if got := strings.Count(text, "/Parent "); got < 4 {
+		t.Errorf("got %d parent links, want one per entry", got)
+	}
+	// Background and Scope nest under Introduction, so it carries a child count.
+	if !strings.Contains(text, "/First ") || !strings.Contains(text, "/Last ") {
+		t.Error("expected the nested entries to be linked from their parent")
+	}
+}
+
+func TestBookmarkDoublesAsADestination(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(8)
+			c.Item().LinkTo("bookmark:Results").Text("see Results")
+			c.Item().Bookmark("Results").Text("Results")
+		})
+	})
+
+	// A bookmark registers a destination named after its title, so a link can aim
+	// at the same spot without a separate anchor.
+	if _, err := doc.Bytes(); err != nil {
+		t.Fatalf("linking to a bookmark's derived name failed: %v", err)
+	}
+}
+
+func TestBookmarkNamedAvoidsTitleCollisions(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(8)
+			// Two sections legitimately share a title; explicit names keep their
+			// destinations distinct.
+			c.Item().BookmarkNamed(1, "Overview", "a-overview").Text("A overview")
+			c.Item().BookmarkNamed(1, "Overview", "b-overview").Text("B overview")
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("explicitly named bookmarks should not collide: %v", err)
+	}
+	if got := strings.Count(string(data), "/Title (Overview)"); got != 2 {
+		t.Errorf("got %d entries titled Overview, want 2", got)
+	}
+}
+
+func TestLinksAttachToTheCorrectPage(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Item().Link("https://first.example").Text("first page link")
+			c.Item().PageBreak()
+			c.Item().Link("https://second.example").Text("second page link")
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countPages(data); got != 2 {
+		t.Fatalf("page count = %d, want 2", got)
+	}
+	// Each page carries exactly one annotation array; a link landing on the wrong
+	// page is invisible until somebody clicks the empty space where it should be.
+	if got := strings.Count(string(data), "/Annots ["); got != 2 {
+		t.Errorf("got %d annotation arrays, want one per page", got)
+	}
+	wants(t, string(data), "(https://first.example)", "(https://second.example)")
+}
+
+func TestPagesWithoutLinksCarryNoAnnots(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Text("no links here")
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "/Annots") {
+		t.Error("a page with no links should carry no annotation array")
+	}
+	if strings.Contains(string(data), "/Outlines") {
+		t.Error("a document with no bookmarks should carry no outline")
+	}
+}
+
+func TestLinkedDocumentRendersCleanly(t *testing.T) {
+	doc := sanur.New()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(10)
+			c.Item().Bookmark("Contents").Text("Contents")
+			c.Item().LinkTo("bookmark:Detail").Text("Go to detail")
+			c.Item().Link("https://example.com").Text("External")
+			c.Item().PageBreak()
+			c.Item().Bookmark("Detail").Text("Detail")
+			c.Item().BookmarkAt(1, "Sub-detail").Text("Sub-detail")
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRendersCleanly(t, "links", data)
+}

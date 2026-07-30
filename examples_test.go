@@ -2,9 +2,13 @@ package sanur_test
 
 import (
 	"bytes"
+	"compress/zlib"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +24,7 @@ var examples = []struct {
 }{
 	{"invoice", "./examples/invoice", 2},
 	{"images", "./examples/images", 2},
-	{"report", "./examples/report", 3},
+	{"report", "./examples/report", 4},
 	{"charts", "./examples/charts", 5},
 }
 
@@ -56,17 +60,75 @@ func TestExamplesProduceValidDocuments(t *testing.T) {
 					example.name, pages, example.minPages)
 			}
 
-			// A glyph outside WinAnsi is replaced with a question mark, which is
-			// deliberate but never what an example should ship. Catching it here
-			// keeps the rendered output honest.
-			if bytes.Contains(data, []byte("(?)")) {
-				t.Errorf("%s contains a substituted glyph; use a WinAnsi character "+
-					"or register a TrueType font", example.name)
-			}
+			assertNoSubstitutedGlyphs(t, example.name, data)
 
 			assertRendersCleanly(t, example.name, data)
 		})
 	}
+}
+
+// assertNoSubstitutedGlyphs checks that no drawn text contains a question mark.
+//
+// A rune outside WinAnsi is replaced with '?', which is deliberate — silently
+// dropping characters would hide missing content — but never what an example
+// should ship. None of the examples use a question mark in prose, so any '?' in a
+// text-showing operator is a substitution.
+//
+// The streams have to be inflated to see it. An earlier version of this check
+// searched the raw file for "(?)" and therefore found nothing at all, since
+// content streams are compressed by default: the assertion passed for months
+// while an arrow glyph in the report rendered as a question mark.
+func assertNoSubstitutedGlyphs(t *testing.T, name string, data []byte) {
+	t.Helper()
+
+	for _, run := range textRuns(t, data) {
+		if strings.Contains(run, "?") {
+			t.Errorf("%s draws %q, which contains a substituted glyph; "+
+				"use a WinAnsi character or register a TrueType font", name, run)
+		}
+	}
+}
+
+var (
+	streamPattern  = regexp.MustCompile(`(?s)stream\r?\n(.*?)\r?\nendstream`)
+	textRunPattern = regexp.MustCompile(`\(((?:[^()\\]|\\.)*)\)\s*Tj`)
+)
+
+// textRuns returns every string drawn by a text-showing operator, inflating
+// compressed streams on the way.
+func textRuns(t *testing.T, data []byte) []string {
+	t.Helper()
+
+	var runs []string
+
+	for _, match := range streamPattern.FindAllSubmatch(data, -1) {
+		body := match[1]
+
+		if inflated, err := inflate(body); err == nil {
+			body = inflated
+		}
+
+		// Font programs and image samples are binary and would yield nonsense
+		// matches, so only streams that look like operators are scanned.
+		if !bytes.Contains(body, []byte("BT")) {
+			continue
+		}
+
+		for _, run := range textRunPattern.FindAllSubmatch(body, -1) {
+			runs = append(runs, string(run[1]))
+		}
+	}
+
+	return runs
+}
+
+func inflate(data []byte) ([]byte, error) {
+	r, err := zlib.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
 }
 
 // assertRendersCleanly parses the document with Ghostscript, which is the only

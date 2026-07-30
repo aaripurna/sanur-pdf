@@ -52,6 +52,25 @@ type Canvas interface {
 	// DrawImage draws a decoded image scaled into the given box.
 	DrawImage(img Image, pos Position, size Size)
 
+	// Link makes a rectangle clickable.
+	//
+	// The rectangle is given in the element's own coordinates; the canvas converts
+	// it to the absolute page position a PDF annotation requires. Rotated content
+	// gets the enclosing axis-aligned box, since annotation rectangles cannot be
+	// rotated.
+	Link(pos Position, size Size, target LinkTarget)
+
+	// Destination registers a named anchor at a point, for internal links and
+	// outline entries to aim at.
+	//
+	// Names are document-wide and resolved after every page has been drawn, so a
+	// link may point forwards to a destination that has not been reached yet.
+	Destination(name string, pos Position)
+
+	// Bookmark adds an entry to the document outline, nested by level, pointing at
+	// a destination registered separately.
+	Bookmark(title string, level int, destination string)
+
 	// Fail records an error encountered while drawing.
 	//
 	// Draw has no error return by design: threading one through every container
@@ -63,6 +82,31 @@ type Canvas interface {
 	// Err returns the first error recorded via Fail, if any.
 	Err() error
 }
+
+// LinkTarget is where a link leads.
+//
+// A link is either external or internal, never both, so this is one struct with
+// two fields rather than an interface: the constructors below make the choice
+// explicit, and URL wins if somebody sets both.
+type LinkTarget struct {
+	// URL is an external address, opened by the reader.
+	URL string
+
+	// Name is an internal destination registered by Canvas.Destination.
+	Name string
+}
+
+// ExternalLink targets a URL.
+func ExternalLink(url string) LinkTarget { return LinkTarget{URL: url} }
+
+// InternalLink targets a named destination within the document.
+func InternalLink(name string) LinkTarget { return LinkTarget{Name: name} }
+
+// External reports whether the target is a URL.
+func (t LinkTarget) External() bool { return t.URL != "" }
+
+// Valid reports whether the target leads anywhere.
+func (t LinkTarget) Valid() bool { return t.URL != "" || t.Name != "" }
 
 // Image is an encoded raster image ready to embed. Sanur stores the original
 // compressed bytes and hands them to the PDF writer untouched, so a JPEG in the

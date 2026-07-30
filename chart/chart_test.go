@@ -808,6 +808,10 @@ func (r *recorder) DrawText(text string, pos core.Position, _ core.TextStyle) {
 
 func (r *recorder) DrawImage(core.Image, core.Position, core.Size) {}
 
+func (r *recorder) Link(core.Position, core.Size, core.LinkTarget) {}
+func (r *recorder) Destination(string, core.Position)              {}
+func (r *recorder) Bookmark(string, int, string)                   {}
+
 // Fail keeps the first failure, matching how the real canvases behave: Draw has
 // no error return, so problems are collected and reported once.
 func (r *recorder) Fail(err error) {

@@ -53,6 +53,15 @@ type Builder struct {
 	// the two separately and a stroked shape may differ from its fill.
 	alphaNames map[[2]uint8]string
 
+	// Links, anchors and outline entries are collected as pages are drawn and
+	// emitted once every page exists. Deferring them is what lets a link point
+	// forwards to a destination on a later page: by the time anything is written,
+	// the whole document has been seen.
+	links          []linkRequest
+	destinations   map[string]destination
+	bookmarks      []bookmark
+	duplicateDests []string
+
 	meta Metadata
 }
 
@@ -65,13 +74,14 @@ type pageEntry struct {
 // streams as plain text, which makes generated files readable during debugging.
 func NewBuilder(meta Metadata, compress bool) *Builder {
 	b := &Builder{
-		writer:     pdfobj.NewWriter(compress),
-		fontNames:  map[string]string{},
-		fontRefs:   map[string]pdfobj.Ref{},
-		imageNames: map[string]string{},
-		imageRefs:  map[string]pdfobj.Ref{},
-		alphaNames: map[[2]uint8]string{},
-		meta:       meta,
+		writer:       pdfobj.NewWriter(compress),
+		fontNames:    map[string]string{},
+		fontRefs:     map[string]pdfobj.Ref{},
+		imageNames:   map[string]string{},
+		imageRefs:    map[string]pdfobj.Ref{},
+		alphaNames:   map[[2]uint8]string{},
+		destinations: map[string]destination{},
+		meta:         meta,
 	}
 	// The page tree node is referenced by every page it contains, so its number
 	// has to exist before any page object is written.
@@ -194,11 +204,26 @@ func (b *Builder) Bytes() ([]byte, error) {
 		return nil, fmt.Errorf("sanur: document has no pages")
 	}
 
+	if err := b.checkDestinations(); err != nil {
+		return nil, err
+	}
+
 	resourcesRef := b.emitResources()
 
-	pageRefs := make([]string, 0, len(b.pages))
-	for _, p := range b.pages {
+	// Every page number is reserved before any page is written, because an
+	// internal link or a bookmark on page one may point at page nine.
+	pageRefs := make([]pdfobj.Ref, len(b.pages))
+	for i := range b.pages {
+		pageRefs[i] = b.writer.Reserve()
+	}
+
+	for i, p := range b.pages {
 		contentRef := b.writer.AddStream(pdfobj.NewDict(), p.content)
+
+		annots, err := b.emitAnnotations(i, pageRefs)
+		if err != nil {
+			return nil, err
+		}
 
 		page := pdfobj.NewDict().
 			SetName("Type", "Page").
@@ -207,20 +232,41 @@ func (b *Builder) Bytes() ([]byte, error) {
 			SetRef("Resources", resourcesRef).
 			SetRef("Contents", contentRef)
 
-		pageRefs = append(pageRefs, b.writer.AddDict(page).String())
+		if annots != "" {
+			page.Set("Annots", annots)
+		}
+
+		b.writer.Put(pageRefs[i], page.String())
+	}
+
+	kids := make([]string, len(pageRefs))
+	for i, ref := range pageRefs {
+		kids[i] = ref.String()
 	}
 
 	b.writer.Put(b.pagesRef, pdfobj.NewDict().
 		SetName("Type", "Pages").
-		Set("Kids", pdfobj.Array(pageRefs...)).
+		Set("Kids", pdfobj.Array(kids...)).
 		SetInt("Count", len(b.pages)).
 		String())
 
-	catalog := b.writer.AddDict(pdfobj.NewDict().
-		SetName("Type", "Catalog").
-		SetRef("Pages", b.pagesRef))
+	outlineRef, err := b.emitOutline(pageRefs)
+	if err != nil {
+		return nil, err
+	}
 
-	return b.writer.Serialize(catalog, b.infoDict())
+	catalog := pdfobj.NewDict().
+		SetName("Type", "Catalog").
+		SetRef("Pages", b.pagesRef)
+
+	if outlineRef.Valid() {
+		catalog.SetRef("Outlines", outlineRef)
+		// PageMode asks the reader to open with the outline panel showing, which is
+		// the point of having one.
+		catalog.SetName("PageMode", "UseOutlines")
+	}
+
+	return b.writer.Serialize(b.writer.AddDict(catalog), b.infoDict())
 }
 
 // emitResources writes the single resource dictionary shared by every page.
@@ -287,7 +333,13 @@ func (b *Builder) infoDict() *pdfobj.Dict {
 		{"CreationDate", b.meta.CreationDate},
 	} {
 		if entry.value != "" {
-			d.SetString(entry.key, entry.value)
+			// Metadata is human-readable text, so it needs an encoding that
+			// survives accents; only the date is ASCII by specification.
+			if entry.key == "CreationDate" {
+				d.SetString(entry.key, entry.value)
+			} else {
+				d.SetTextString(entry.key, entry.value)
+			}
 		}
 	}
 	if d.Len() == 0 {

@@ -216,6 +216,59 @@ func (c *Container) Rotate(degrees float64) *Container {
 	return c.wrap(r, func(e core.Element) { r.Child = e })
 }
 
+// --- Links and navigation --------------------------------------------------
+
+// Link makes the subtree clickable, opening a URL.
+//
+// The clickable area is the box the child occupies, so wrapping a row makes the
+// whole row clickable and wrapping the text makes only the words clickable.
+// Nothing is drawn: colour or underline the text if the link should look like one.
+func (c *Container) Link(url string) *Container {
+	l := &elements.Link{Target: core.ExternalLink(url)}
+	return c.wrap(l, func(e core.Element) { l.Child = e })
+}
+
+// LinkTo makes the subtree clickable, jumping to a named destination registered
+// by Anchor or Bookmark.
+//
+// The destination may be anywhere in the document, including a later page:
+// nothing is resolved until every page has been drawn. A name that never gets
+// registered is reported as an error rather than becoming a dead link.
+func (c *Container) LinkTo(destination string) *Container {
+	l := &elements.Link{Target: core.InternalLink(destination)}
+	return c.wrap(l, func(e core.Element) { l.Child = e })
+}
+
+// Anchor registers a named destination for LinkTo to aim at.
+func (c *Container) Anchor(name string) *Container {
+	a := &elements.Anchor{Name: name}
+	return c.wrap(a, func(e core.Element) { a.Child = e })
+}
+
+// Bookmark adds a top-level entry to the document outline, the panel a reader
+// shows alongside the page. It also registers a destination, so LinkTo can target
+// the same spot.
+func (c *Container) Bookmark(title string) *Container {
+	return c.BookmarkAt(0, title)
+}
+
+// BookmarkAt adds an outline entry at a nesting level, zero being top level.
+//
+// An entry becomes a child of the nearest preceding entry with a lower level, the
+// way headings nest in a document, and entries appear in the order they were
+// drawn.
+func (c *Container) BookmarkAt(level int, title string) *Container {
+	b := &elements.Bookmark{Title: title, Level: level}
+	return c.wrap(b, func(e core.Element) { b.Child = e })
+}
+
+// BookmarkNamed adds an outline entry with an explicit destination name, for when
+// two bookmarks would otherwise share a title.
+func (c *Container) BookmarkNamed(level int, title, name string) *Container {
+	b := &elements.Bookmark{Title: title, Level: level, Name: name}
+	return c.wrap(b, func(e core.Element) { b.Child = e })
+}
+
 // ShowIf renders the subtree only when condition holds. When it does not, the
 // chained content is still built but never measured or drawn.
 func (c *Container) ShowIf(condition bool) *Container {

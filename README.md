@@ -148,6 +148,44 @@ reached, a text block which line — so one shared header instance would arrive 
 the second definition believing it had already been drawn. Running the function
 afresh per definition gives each one its own instances.
 
+## Links and bookmarks
+
+Links are elements, so anything can be made clickable — a word, a table row, a
+whole panel. The clickable area is whatever box the child occupies.
+
+```go
+c.Item().Link("https://example.com").Text("External link")
+
+c.Item().LinkTo("methods").Text("Jump to Methods")   // internal
+c.Item().Anchor("methods").Text("Methods")           // the destination
+
+c.Item().Bookmark("Introduction").Text("Introduction")
+c.Item().BookmarkAt(1, "Background").Text("Background")
+```
+
+`Bookmark` does two things: it adds an entry to the reader's outline panel, and it
+registers a destination named after its title — so `LinkTo("bookmark:Introduction")`
+targets the same spot without a separate anchor. `BookmarkNamed` takes an explicit
+name for when two sections legitimately share a title.
+
+Outline entries nest by level, the way document headings do: an entry becomes a
+child of the nearest preceding entry with a lower level, in the order they were
+drawn. A level that jumps by more than one attaches to the nearest open ancestor
+rather than being dropped.
+
+Nothing is resolved until every page has been drawn, so **a link may point
+forwards** — which is what a table of contents needs. A name that never gets
+registered, or one registered twice, is reported as an error rather than becoming
+a dead or ambiguous link.
+
+Two things to know:
+
+- **A link draws nothing.** Colour or underline the text yourself if it should
+  look like a link; a document may reasonably want neither.
+- **A table of contents cannot show page numbers yet.** Destinations resolve after
+  layout, so the page a section landed on is not available to the text that
+  describes it. The entries are clickable; they just cannot say "page 7".
+
 ## Layout vocabulary
 
 Chain these off any container. Decorating methods return the container for the
@@ -163,6 +201,8 @@ child they just wrapped, so calls nest rather than overwrite.
 
 **Decoration** — `Background`, `RoundedBackground`, `Border`, `BorderEach`,
 `BorderTop`/`Right`/`Bottom`/`Left`, `Clip`, `Rotate`, `ShowIf`
+
+**Navigation** — `Link`, `LinkTo`, `Anchor`, `Bookmark`, `BookmarkAt`, `BookmarkNamed`
 
 **Containers** — `Column`, `Row`, `Table`
 
@@ -410,7 +450,7 @@ make examples     # or: make invoice / images / report / charts
 | --- | --- |
 | `examples/invoice` | Tables that paginate, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
-| `examples/report` | `EveryPage` furniture, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/report` | `EveryPage` furniture, a clickable table of contents with bookmarks, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 
 The report example is the one to read for complex layout. There is no chart
@@ -456,18 +496,18 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-353 tests across seven packages, at 95.3% statement coverage:
+383 tests across seven packages, at 95.0% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 178 | 177 | 99.4% |
-| `elements` | 566 | 547 | 96.6% |
-| `sanur` (root) | 380 | 366 | 96.3% |
-| `internal/pdfobj` | 157 | 149 | 94.9% |
-| `render` | 363 | 342 | 94.2% |
+| `core` | 182 | 181 | 99.5% |
+| `sanur` (root) | 396 | 382 | 96.5% |
+| `elements` | 592 | 567 | 95.8% |
+| `internal/pdfobj` | 172 | 164 | 95.3% |
+| `render` | 505 | 473 | 93.7% |
 | `chart` | 480 | 449 | 93.5% |
 | `fonts` | 174 | 159 | 91.4% |
-| **Total** | **2298** | **2189** | **95.3%** |
+| **Total** | **2501** | **2375** | **95.0%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -494,6 +534,10 @@ What the suite checks, and why in that particular way:
   canvas that captures labels and their positions, so a collision between a
   negative bar's label and its category label is caught without pinning
   coordinates that any cosmetic change would break.
+- **Annotation geometry** is checked against an exact rectangle, because a link in
+  the wrong place is invisible until somebody clicks empty space. The transform
+  maths and the layout-to-PDF coordinate flip are tested separately from the
+  documents that use them.
 - **Cross-axis resolution** is pinned per decorator. A row whose height came from
   a vertically centred cell would silently become page-tall — the layout still
   succeeds, it just looks wrong — so each `NaturalSize` forward is tested on its
@@ -521,7 +565,9 @@ missing, so the suite passes on a bare machine.
 - Font subsetting — embedded fonts are included whole
 - Multi-column text flow, and repeating a table header on every page
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
-- Links, outlines, annotations, form fields, tagged/accessible output
+- Page numbers in a table of contents (destinations resolve after layout)
+- Annotations beyond links: notes, highlights, form fields
+- Tagged and accessible output (PDF/UA)
 - Encryption, and PDF/A conformance
 - Gradients and blend modes (dash patterns, arcs and paths are implemented)
 - Clipping to an arbitrary path — `Clip` takes a rectangle only

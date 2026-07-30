@@ -288,3 +288,47 @@ func TestSerializeRejectsMissingCatalog(t *testing.T) {
 		t.Error("expected an error when no catalog reference is given")
 	}
 }
+
+func TestTextStringKeepsASCIIReadable(t *testing.T) {
+	// ASCII stays a literal string: readable in the output and half the bytes of
+	// the hex form.
+	if got := pdfobj.TextString("Quarterly Report"); got != "(Quarterly Report)" {
+		t.Errorf("TextString = %q, want a literal string", got)
+	}
+	// Escaping still applies.
+	if got := pdfobj.TextString("a(b)"); got != `(a\(b\))` {
+		t.Errorf("TextString = %q, want the delimiters escaped", got)
+	}
+}
+
+func TestTextStringEncodesNonASCIIAsUTF16(t *testing.T) {
+	// A PDF text string is PDFDocEncoding or UTF-16BE with a byte-order mark, and
+	// nothing else. Passing Go's UTF-8 through verbatim turns "Café" into "CafÃ©"
+	// in every reader.
+	got := pdfobj.TextString("Café")
+
+	want := "<FEFF00430061006600E9>"
+	if got != want {
+		t.Errorf("TextString = %q, want %q", got, want)
+	}
+}
+
+func TestTextStringHandlesAstralPlanes(t *testing.T) {
+	// A rune above the basic multilingual plane needs a surrogate pair; emitting
+	// its code point directly would produce an invalid UTF-16 sequence.
+	got := pdfobj.TextString("\U0001F600")
+
+	if got != "<FEFFD83DDE00>" {
+		t.Errorf("TextString = %q, want a surrogate pair", got)
+	}
+}
+
+func TestTextStringTreatsControlCharactersAsNonASCII(t *testing.T) {
+	// A literal string would have to escape these; routing them through the hex
+	// form avoids needing a second escaping rule.
+	got := pdfobj.TextString("line\nbreak")
+
+	if !strings.HasPrefix(got, "<FEFF") {
+		t.Errorf("TextString = %q, want the hex form", got)
+	}
+}
