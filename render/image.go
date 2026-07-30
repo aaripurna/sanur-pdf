@@ -94,9 +94,19 @@ func (b *Builder) imageResource(img core.Image) (string, error) {
 func (b *Builder) emitImage(img core.Image) (pdfobj.Ref, error) {
 	if img.Format == "jpeg" {
 		// DCTDecode is the JPEG codec built into PDF, so the original file is
-		// passed through untouched.
-		dict := imageDict(img.PixelWidth, img.PixelHeight, "DeviceRGB", 8).
-			SetName("Filter", "DCTDecode")
+		// passed through untouched — which means its colour space has to be
+		// declared from outside the data, read from the frame header rather than
+		// assumed. A greyscale or CMYK JPEG labelled DeviceRGB is rejected by
+		// readers and, where tolerated, renders in the wrong colours.
+		info, err := scanJPEG(img.Data)
+		if err != nil {
+			return 0, fmt.Errorf("sanur/render: image %q: %w", img.Key, err)
+		}
+
+		dict, err := jpegDict(info, img.PixelWidth, img.PixelHeight)
+		if err != nil {
+			return 0, fmt.Errorf("sanur/render: image %q: %w", img.Key, err)
+		}
 		return b.writer.AddStream(dict, img.Data), nil
 	}
 	return b.emitRaster(img)

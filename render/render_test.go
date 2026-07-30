@@ -7,6 +7,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1181,5 +1182,137 @@ func TestStrokeOnlyIgnoresTheFillRule(t *testing.T) {
 	requireContains(t, stream, "\nS\n")
 	if strings.Contains(stream, "S*") {
 		t.Errorf("a stroke has no fill rule:\n%s", stream)
+	}
+}
+
+// --- JPEG colour spaces -----------------------------------------------------
+
+// encodeGrayJPEG produces a genuine single-channel JPEG. Go's encoder takes this
+// path for *image.Gray, which is what makes the greyscale case testable
+// end to end; it has no four-channel path, so CMYK is covered by unit tests
+// against synthesised headers instead.
+func encodeGrayJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+
+	g := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			g.SetGray(x, y, color.Gray{Y: uint8(x * 255 / w)})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, g, nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestGrayscaleJPEGDeclaresDeviceGray(t *testing.T) {
+	img, err := render.DecodeImage("gray", encodeGrayJPEG(t, 40, 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{}, core.Size{Width: 80, Height: 40})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A single-channel JPEG labelled DeviceRGB is what readers reject: three
+	// components are promised and one arrives.
+	requireContains(t, string(data), "/ColorSpace /DeviceGray", "/Filter /DCTDecode")
+	if bytes.Contains(data, []byte("/ColorSpace /DeviceRGB")) {
+		t.Error("a greyscale JPEG was labelled DeviceRGB")
+	}
+}
+
+func TestColourJPEGStillDeclaresDeviceRGB(t *testing.T) {
+	img, err := render.DecodeImage("colour", encodeJPEG(t, 32, 16))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{}, core.Size{Width: 64, Height: 32})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireContains(t, string(data), "/ColorSpace /DeviceRGB")
+}
+
+func TestGrayscaleJPEGRendersCleanly(t *testing.T) {
+	// The regression this guards: Ghostscript reported a recoverable image error
+	// for every greyscale JPEG, because the colour space was hardcoded.
+	gs, err := exec.LookPath("gs")
+	if err != nil {
+		t.Skip("ghostscript not installed")
+	}
+
+	img, err := render.DecodeImage("gray", encodeGrayJPEG(t, 60, 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, true)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{X: 40, Y: 40}, core.Size{Width: 120, Height: 80})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "gray.pdf")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command(gs,
+		"-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=nullpage", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ghostscript rejected the document: %v\n%s", err, out)
+	}
+	if bytes.Contains(bytes.ToLower(out), []byte("error")) {
+		t.Errorf("ghostscript complained about a greyscale JPEG:\n%s", out)
+	}
+}
+
+func TestMalformedJPEGIsReported(t *testing.T) {
+	// DecodeImage accepts anything image.DecodeConfig can read, so a file that
+	// parses as an image but has no readable frame header has to fail later, with
+	// the image named.
+	img := core.Image{
+		Key:        "broken",
+		Format:     "jpeg",
+		Data:       []byte{0xFF, 0xD8, 0xFF, 0xD9},
+		PixelWidth: 10, PixelHeight: 10,
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{}, core.Size{Width: 10, Height: 10})
+
+	if canvas.Err() == nil {
+		t.Fatal("expected a malformed JPEG to be reported")
+	}
+	if !strings.Contains(canvas.Err().Error(), "broken") {
+		t.Errorf("error %q does not name the image", canvas.Err())
 	}
 }

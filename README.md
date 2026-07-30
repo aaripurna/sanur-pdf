@@ -378,11 +378,17 @@ img, err := render.EncodeJPEG("chart", rendered, 85)
 c.Item().Width(120).Image(img)
 ```
 
-JPEGs are embedded byte-for-byte via `DCTDecode`, so no quality is lost. PNGs are
-decoded to RGB, with any transparency emitted as a separate soft mask, because PDF
-image samples carry no alpha channel. Images are pooled by key, so a logo repeated
-in a footer costs its bytes once — which makes the key worth setting deliberately
-when the same picture is loaded twice.
+JPEGs are embedded byte-for-byte via `DCTDecode`, so no quality is lost. Because
+the data is never decoded, its colour space has to be declared from outside it —
+so the channel count is read from the frame header and mapped to `DeviceGray`,
+`DeviceRGB` or `DeviceCMYK`. Adobe writes CMYK JPEGs inverted and records the fact
+only by the presence of an APP14 segment, so that case gets a `/Decode` array to
+undo it.
+
+PNGs are decoded to RGB, with any transparency emitted as a separate soft mask,
+because PDF image samples carry no alpha channel. Images are pooled by key, so a
+logo repeated in a footer costs its bytes once — which makes the key worth setting
+deliberately when the same picture is loaded twice.
 
 Fit modes: `FitWidth` (default), `FitArea`, `FitStretch`, `FitUnscaled`.
 
@@ -450,7 +456,7 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-341 tests across seven packages, at 95.4% statement coverage:
+353 tests across seven packages, at 95.3% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
@@ -458,10 +464,10 @@ make example      # generate invoice.pdf
 | `elements` | 566 | 547 | 96.6% |
 | `sanur` (root) | 380 | 366 | 96.3% |
 | `internal/pdfobj` | 157 | 149 | 94.9% |
-| `render` | 308 | 292 | 94.8% |
+| `render` | 363 | 342 | 94.2% |
 | `chart` | 480 | 449 | 93.5% |
 | `fonts` | 174 | 159 | 91.4% |
-| **Total** | **2243** | **2139** | **95.4%** |
+| **Total** | **2298** | **2189** | **95.3%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -492,6 +498,11 @@ What the suite checks, and why in that particular way:
   a vertically centred cell would silently become page-tall — the layout still
   succeeds, it just looks wrong — so each `NaturalSize` forward is tested on its
   own.
+- **JPEG colour spaces** are covered two ways. Greyscale runs end to end through
+  Ghostscript, since Go can encode a single-channel JPEG. Go has no four-channel
+  encoder, so CMYK is tested against synthesised marker headers instead — enough
+  to pin the colour-space decision and the Adobe inversion, but the CMYK path has
+  not been rendered against a real file.
 - **Real interpreters** parse the output. Ghostscript and `pdftotext` run where
   installed, which is the only way to catch a structurally plausible file that no
   reader will actually open, and to confirm the text is text rather than shapes.
