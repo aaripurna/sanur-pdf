@@ -110,6 +110,43 @@ The dependency direction is strict: `core` knows nothing about PDF, so layout is
 testable without producing a file, and the file format is testable without
 running a layout.
 
+## Pages, sheets and shared furniture
+
+`doc.Page(...)` declares a page *definition*, not a page. One definition produces
+as many sheets as its content needs, redrawing its header and footer on each — so
+a definition holding a 500-row table becomes a dozen sheets with the header on
+every one. That much needs no configuration.
+
+What needs configuring is furniture shared across *several* definitions.
+`EveryPage` sets defaults — size, margins, background, text style, header and
+footer — for every definition declared after it:
+
+```go
+doc.EveryPage(func(p *sanur.Page) {
+	p.Size(sanur.A4).Margin(40)
+	p.Header().Text("Annual Report")
+	p.Footer().AlignCenter().PageNumber("Page {page} of {total}")
+})
+
+doc.Page(func(p *sanur.Page) {
+	p.Content().Text("Inherits everything above.")
+})
+
+doc.Page(func(p *sanur.Page) {
+	p.Size(sanur.Landscape(sanur.A4))  // overrides only the size
+	p.Content().Text("Same header and footer.")
+})
+```
+
+A definition's own build runs second, so it overrides whatever it names and
+inherits the rest.
+
+`EveryPage` takes a function rather than a prepared element tree, and that is
+deliberate. Elements carry pagination state — a column remembers which item it
+reached, a text block which line — so one shared header instance would arrive at
+the second definition believing it had already been drawn. Running the function
+afresh per definition gives each one its own instances.
+
 ## Layout vocabulary
 
 Chain these off any container. Decorating methods return the container for the
@@ -263,7 +300,7 @@ make examples     # or: make invoice / make images / make report
 | --- | --- |
 | `examples/invoice` | Tables that paginate, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
-| `examples/report` | Stat tiles, bar charts and sparklines built from primitives, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/report` | `EveryPage` furniture, stat tiles, bar charts and sparklines built from primitives, justified two-column prose, mixed portrait and landscape sheets |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -308,17 +345,17 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-255 tests across six packages, at 95.6% statement coverage:
+262 tests across six packages, at 95.7% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 102 | 102 | 100.0% |
 | `elements` | 554 | 535 | 96.6% |
-| `sanur` (root) | 373 | 359 | 96.2% |
+| `sanur` (root) | 377 | 363 | 96.3% |
 | `internal/pdfobj` | 157 | 149 | 94.9% |
 | `render` | 272 | 257 | 94.5% |
 | `fonts` | 174 | 159 | 91.4% |
-| **Total** | **1632** | **1561** | **95.6%** |
+| **Total** | **1636** | **1565** | **95.7%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's

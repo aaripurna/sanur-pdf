@@ -76,14 +76,23 @@ func main() {
 		Subject("Q2 2026").
 		Creator("sanur/examples/report")
 
-	// --- Sheet one: dashboard --------------------------------------------
-	doc.Page(func(p *sanur.Page) {
+	// Geometry and furniture shared by every sheet in the document. EveryPage runs
+	// this before each definition's own build, so the three definitions below only
+	// describe what makes them different.
+	//
+	// It takes a function rather than a prepared element tree on purpose: elements
+	// carry pagination state, so a single shared header instance would arrive at
+	// the second definition believing it had already been drawn.
+	doc.EveryPage(func(p *sanur.Page) {
 		p.Size(sanur.A4).MarginEach(sanur.Mm(16), sanur.Mm(15), sanur.Mm(14), sanur.Mm(15))
 		p.DefaultTextStyle(sanur.TextStyle().Size(9.5).Color(ink))
 
 		p.Header().Element(reportHeader("Quarterly Business Review", "Q2 2026 · Confidential"))
 		p.Footer().Element(reportFooter())
+	})
 
+	// --- Sheet one: dashboard --------------------------------------------
+	doc.Page(func(p *sanur.Page) {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(20)
 
@@ -114,11 +123,10 @@ func main() {
 
 	// --- Sheet two: two-column article -----------------------------------
 	doc.Page(func(p *sanur.Page) {
-		p.Size(sanur.A4).MarginEach(sanur.Mm(16), sanur.Mm(15), sanur.Mm(14), sanur.Mm(15))
+		// Only the differences from the template: looser leading for prose, and a
+		// header naming this section.
 		p.DefaultTextStyle(sanur.TextStyle().Size(9.5).Color(ink).LineHeight(1.35))
-
 		p.Header().Element(reportHeader("Operating review", "Q2 2026 · Confidential"))
-		p.Footer().Element(reportFooter())
 
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(16)
@@ -166,11 +174,12 @@ func main() {
 
 	// --- Sheet three: landscape appendix ---------------------------------
 	doc.Page(func(p *sanur.Page) {
+		// Overriding the size alone is enough to turn the sheet sideways; the
+		// header and footer from the template still apply, and they reflow to the
+		// wider measure because they were built as relative rows.
 		p.Size(sanur.Landscape(sanur.A4)).Margin(sanur.Mm(14))
 		p.DefaultTextStyle(sanur.TextStyle().Size(8.5).Color(ink))
-
 		p.Header().Element(reportHeader("Appendix A · Monthly detail", "Q2 2026"))
-		p.Footer().Element(reportFooter())
 
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(14)

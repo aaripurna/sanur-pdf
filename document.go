@@ -25,6 +25,10 @@ type Document struct {
 	// compress controls Flate encoding of content streams. It is on by default;
 	// turning it off makes the output readable for debugging.
 	compress bool
+
+	// template is applied to each page definition before its own build function
+	// runs. See EveryPage.
+	template func(*Page)
 }
 
 // New creates an empty document.
@@ -58,16 +62,60 @@ func (d *Document) Uncompressed() *Document {
 	return d
 }
 
+// EveryPage sets defaults applied to every page definition added afterwards:
+// page size, margins, background, default text style, and the header and footer.
+//
+// A single page definition already repeats its own header and footer on every
+// sheet it produces. EveryPage covers the other case — a document built from
+// several definitions that should nevertheless look like one document — without
+// each definition having to remember to install the same furniture.
+//
+// It takes a function rather than a prepared element tree, and that is the whole
+// point. Elements carry pagination state: a column remembers which item it
+// reached, a text block which line. Sharing one header instance across
+// definitions would share that state too, and the second definition would
+// inherit a header that believed it had already been drawn. Running the function
+// afresh per definition gives each one its own instances.
+//
+// A definition can still override anything the template set, since its own build
+// function runs second:
+//
+//	doc.EveryPage(func(p *sanur.Page) {
+//		p.Size(sanur.A4).Margin(40)
+//		p.Header().Text("Annual Report")
+//		p.Footer().AlignCenter().PageNumber("Page {page} of {total}")
+//	})
+//
+//	doc.Page(func(p *sanur.Page) {
+//		p.Content().Text("Inherits the size, margins and furniture.")
+//	})
+//
+//	doc.Page(func(p *sanur.Page) {
+//		p.Size(sanur.Landscape(sanur.A4))  // overrides just the size
+//		p.Content().Text("Keeps the same header and footer.")
+//	})
+func (d *Document) EveryPage(build func(*Page)) *Document {
+	d.template = build
+	return d
+}
+
 // Page appends a page definition and configures it through build.
 //
 // One definition can produce many sheets: its content is laid out repeatedly
 // until exhausted, with the header and footer redrawn on each. That is why this
 // is a "page definition" rather than a page — a definition holding a long table
 // becomes as many sheets as the table needs.
+//
+// Any defaults set by EveryPage are applied first, so build can override them.
 func (d *Document) Page(build func(*Page)) *Document {
 	p := newPage()
 	d.pages = append(d.pages, p)
+
+	if d.template != nil {
+		d.template(p)
+	}
 	build(p)
+
 	return d
 }
 

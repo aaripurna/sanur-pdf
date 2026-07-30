@@ -720,3 +720,206 @@ func TestMultiplePageDefinitionsAreConcatenated(t *testing.T) {
 	// Page numbering runs across definitions, so the total covers both.
 	wants(t, string(data), "595.28 841.89", "841.89 595.28")
 }
+
+// --- document-wide page defaults -------------------------------------------
+
+func TestEveryPageAppliesFurnitureToAllDefinitions(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Header().Text("SHARED HEADER")
+		p.Footer().Text("SHARED FOOTER")
+	})
+
+	doc.Page(func(p *sanur.Page) { p.Content().Text("first definition") })
+	doc.Page(func(p *sanur.Page) { p.Content().Text("second definition") })
+	doc.Page(func(p *sanur.Page) { p.Content().Text("third definition") })
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("generating document: %v", err)
+	}
+
+	if got := countPages(data); got != 3 {
+		t.Fatalf("page count = %d, want 3", got)
+	}
+	// The furniture has to appear once per sheet, not once for the whole run.
+	if got := strings.Count(string(data), "SHARED HEADER"); got != 3 {
+		t.Errorf("header drawn %d times across 3 pages, want 3", got)
+	}
+	if got := strings.Count(string(data), "SHARED FOOTER"); got != 3 {
+		t.Errorf("footer drawn %d times across 3 pages, want 3", got)
+	}
+}
+
+func TestEveryPageSuppliesGeometryDefaults(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Size(sanur.A5).MarginEach(11, 22, 33, 44)
+	})
+	doc.Page(func(p *sanur.Page) { p.Content().Text("x") })
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wants(t, string(data), "419.53 595.28")    // A5 media box
+	wants(t, string(data), "1 0 0 1 44 11 cm") // left and top margins
+}
+
+func TestPageOverridesTemplateDefaults(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(20)
+		p.Header().Text("TEMPLATE HEADER")
+	})
+
+	doc.Page(func(p *sanur.Page) {
+		p.Content().Text("inherits")
+	})
+	doc.Page(func(p *sanur.Page) {
+		// The definition's own build runs second, so it wins.
+		p.Size(sanur.Landscape(sanur.A4))
+		p.Header().Text("OVERRIDDEN")
+		p.Content().Text("overrides")
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := string(data)
+	if got := strings.Count(text, "TEMPLATE HEADER"); got != 1 {
+		t.Errorf("template header appears %d times, want 1", got)
+	}
+	if got := strings.Count(text, "OVERRIDDEN"); got != 1 {
+		t.Errorf("overriding header appears %d times, want 1", got)
+	}
+	// Both orientations should be present: portrait then landscape.
+	wants(t, text, "595.28 841.89", "841.89 595.28")
+}
+
+func TestEveryPageGivesEachDefinitionFreshElements(t *testing.T) {
+	// This is why the template is a function rather than a prepared element tree.
+	// Elements carry pagination state, so a shared header instance would arrive at
+	// the second definition believing it had already been drawn.
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Margin(30)
+		// A multi-line header exercises the state that would be shared: a text
+		// block tracks which line it has rendered.
+		p.Header().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(2)
+			c.Item().Text("HEADER LINE ONE")
+			c.Item().Text("HEADER LINE TWO")
+		})
+	})
+
+	for i := 0; i < 3; i++ {
+		doc.Page(func(p *sanur.Page) { p.Content().Text("body") })
+	}
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, line := range []string{"HEADER LINE ONE", "HEADER LINE TWO"} {
+		if got := strings.Count(string(data), line); got != 3 {
+			t.Errorf("%q drawn %d times across 3 pages, want 3", line, got)
+		}
+	}
+}
+
+func TestEveryPageStillRepeatsAcrossSheetsOfOneDefinition(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Header().Text("PER SHEET")
+	})
+
+	// One definition long enough to spill over several sheets.
+	doc.Page(func(p *sanur.Page) {
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			for i := 0; i < 120; i++ {
+				c.Item().Height(20).Text("row")
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pages := countPages(data)
+	if pages < 3 {
+		t.Fatalf("expected several sheets, got %d", pages)
+	}
+	if got := strings.Count(string(data), "PER SHEET"); got != pages {
+		t.Errorf("header drawn %d times across %d sheets, want one per sheet", got, pages)
+	}
+}
+
+func TestEveryPageAppliesOnlyToLaterDefinitions(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	// Declared before the template, so it gets none of it.
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(30)
+		p.Content().Text("early")
+	})
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Margin(30)
+		p.Header().Text("LATE TEMPLATE")
+	})
+
+	doc.Page(func(p *sanur.Page) { p.Content().Text("late") })
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A builder reads top to bottom, so the template affects what follows it.
+	if got := strings.Count(string(data), "LATE TEMPLATE"); got != 1 {
+		t.Errorf("template header appears %d times, want 1", got)
+	}
+}
+
+func TestEveryPageCanBeReplaced(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Margin(30)
+		p.Header().Text("FIRST TEMPLATE")
+	})
+	doc.Page(func(p *sanur.Page) { p.Content().Text("a") })
+
+	doc.EveryPage(func(p *sanur.Page) {
+		p.Margin(30)
+		p.Header().Text("SECOND TEMPLATE")
+	})
+	doc.Page(func(p *sanur.Page) { p.Content().Text("b") })
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	text := string(data)
+	if got := strings.Count(text, "FIRST TEMPLATE"); got != 1 {
+		t.Errorf("first template appears %d times, want 1", got)
+	}
+	if got := strings.Count(text, "SECOND TEMPLATE"); got != 1 {
+		t.Errorf("second template appears %d times, want 1", got)
+	}
+}
