@@ -292,6 +292,27 @@ func (c *Container) LineVertical(width float64, color core.Color) {
 	c.install(&elements.Line{Vertical: true, Width: width, Color: color})
 }
 
+// DashedLineHorizontal draws a dashed horizontal rule. The dash lengths alternate
+// on and off in points; a single value means equal dashes and gaps.
+func (c *Container) DashedLineHorizontal(width float64, color core.Color, dash ...float64) {
+	c.install(&elements.Line{Width: width, Color: color, Dash: dash})
+}
+
+// DashedLineVertical draws a dashed vertical rule.
+func (c *Container) DashedLineVertical(width float64, color core.Color, dash ...float64) {
+	c.install(&elements.Line{Vertical: true, Width: width, Color: color, Dash: dash})
+}
+
+// Path draws an arbitrary outline, filled, stroked or both.
+//
+// This is the escape hatch for shapes the box vocabulary cannot express — arcs,
+// polygons, connecting lines. The path is drawn in the element's own coordinate
+// space with the origin at its top-left corner, and it claims whatever space the
+// parent offers, so wrap it in a constraint to give it a definite size.
+func (c *Container) Path(path *core.Path, style core.PathStyle) {
+	c.install(&elements.PathShape{Path: path, Style: style})
+}
+
 // PageBreak pushes everything after it in the enclosing column onto a new page.
 func (c *Container) PageBreak() {
 	c.install(&elements.PageBreak{})

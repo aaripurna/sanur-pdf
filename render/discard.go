@@ -31,6 +31,7 @@ func (c *DiscardCanvas) ClipRect(core.Position, core.Size) {}
 func (c *DiscardCanvas) DrawRect(core.Position, core.Size, core.Color) {}
 func (c *DiscardCanvas) DrawRoundedRect(core.Position, core.Size, float64, core.Color) {
 }
+func (c *DiscardCanvas) DrawPath(*core.Path, core.PathStyle)                        {}
 func (c *DiscardCanvas) DrawLine(core.Position, core.Position, core.Color, float64) {}
 func (c *DiscardCanvas) DrawText(string, core.Position, core.TextStyle)             {}
 func (c *DiscardCanvas) DrawImage(core.Image, core.Position, core.Size)             {}

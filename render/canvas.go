@@ -10,11 +10,6 @@ import (
 	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
-// kappa is the control-point ratio that makes a cubic Bézier approximate a
-// quarter circle. PDF has no arc operator, so every rounded corner is drawn as a
-// curve, and 0.5523 is the constant that minimises the error of that fit.
-const kappa = 0.55228475
-
 // PDFCanvas writes drawing operations as PDF content stream operators.
 //
 // Layout works in a top-left origin space with Y increasing downwards, which is
@@ -112,36 +107,140 @@ func (c *PDFCanvas) DrawRect(pos core.Position, size core.Size, fill core.Color)
 	})
 }
 
+// DrawRoundedRect fills a rectangle with rounded corners.
+//
+// The corner geometry lives in core.RoundedRect so that the layout engine and the
+// canvas cannot disagree about where a corner sits; this is a filled path like any
+// other. A zero radius still takes the rectangle operator, which is shorter than
+// four straight path segments.
 func (c *PDFCanvas) DrawRoundedRect(pos core.Position, size core.Size, radius float64, fill core.Color) {
 	if !fill.Visible() || size.Width <= 0 || size.Height <= 0 {
 		return
 	}
-	// A radius larger than half the shorter side would make opposite corners
-	// overlap and self-intersect, so it is clamped to the largest value that
-	// still produces a valid outline (a stadium, or a circle for a square).
-	radius = math.Min(radius, math.Min(size.Width, size.Height)/2)
-	if radius <= 0 {
+	if math.Min(radius, math.Min(size.Width, size.Height)/2) <= 0 {
 		c.DrawRect(pos, size, fill)
 		return
 	}
+	c.DrawPath(core.RoundedRect(pos, size, radius), core.Filled(fill))
+}
 
-	x, y := pos.X, pos.Y
-	w, h := size.Width, size.Height
-	ctl := radius * kappa
+// DrawPath emits an arbitrary outline.
+//
+// Fill and stroke are combined into one painting operator where both apply, which
+// is both fewer bytes and correct: filling and stroking as two operations would
+// composite the stroke over the fill twice along the shared boundary, showing as
+// a darker edge wherever either colour is translucent.
+func (c *PDFCanvas) DrawPath(path *core.Path, style core.PathStyle) {
+	if path.Empty() || !style.Visible() {
+		return
+	}
 
-	c.withAlpha(fill, func() {
-		c.setFillColor(fill)
-		c.op("%s %s m", pdfobj.Num(x+radius), pdfobj.Num(y))
-		c.op("%s %s l", pdfobj.Num(x+w-radius), pdfobj.Num(y))
-		c.curve(x+w-radius+ctl, y, x+w, y+radius-ctl, x+w, y+radius)
-		c.op("%s %s l", pdfobj.Num(x+w), pdfobj.Num(y+h-radius))
-		c.curve(x+w, y+h-radius+ctl, x+w-radius+ctl, y+h, x+w-radius, y+h)
-		c.op("%s %s l", pdfobj.Num(x+radius), pdfobj.Num(y+h))
-		c.curve(x+radius-ctl, y+h, x, y+h-radius+ctl, x, y+h-radius)
-		c.op("%s %s l", pdfobj.Num(x), pdfobj.Num(y+radius))
-		c.curve(x, y+radius-ctl, x+radius-ctl, y, x+radius, y)
-		c.op("h f")
+	c.withPathAlpha(style, func() {
+		if style.Fills() {
+			r, g, b := style.Fill.Components()
+			c.op("%s %s %s rg", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+		}
+		if style.Strokes() {
+			r, g, b := style.Stroke.Components()
+			c.op("%s %s %s RG", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+			c.applyStrokeState(style)
+		}
+
+		c.emitPath(path)
+
+		// The starred operators fill by the even-odd rule; the plain ones use
+		// nonzero winding, which is the PDF default.
+		star := ""
+		if style.EvenOdd {
+			star = "*"
+		}
+
+		switch {
+		case style.Fills() && style.Strokes():
+			// B fills and strokes in one pass. Filling implicitly closes each
+			// subpath, so an unclosed outline still fills sensibly.
+			c.op("B%s", star)
+		case style.Fills():
+			c.op("f%s", star)
+		default:
+			// A stroke traces the outline, so no fill rule applies.
+			c.op("S")
+		}
 	})
+}
+
+// applyStrokeState emits the stroke parameters.
+func (c *PDFCanvas) applyStrokeState(style core.PathStyle) {
+	c.op("%s w", pdfobj.Num(style.Width))
+
+	if style.Cap != core.CapButt {
+		c.op("%d J", int(style.Cap))
+	}
+	if style.Join != core.JoinMiter {
+		c.op("%d j", int(style.Join))
+	}
+	// The limit only matters for mitred joins, and PDF already defaults to 10.
+	if style.Join == core.JoinMiter && style.MiterLimit > 0 &&
+		style.MiterLimit != core.DefaultMiterLimit {
+		c.op("%s M", pdfobj.Num(style.MiterLimit))
+	}
+
+	if style.Dashed() {
+		lengths := make([]float64, len(style.Dash))
+		copy(lengths, style.Dash)
+		c.op("%s %s d", pdfobj.NumArray(lengths...), pdfobj.Num(style.DashPhase))
+	}
+}
+
+// emitPath writes the path construction operators.
+func (c *PDFCanvas) emitPath(path *core.Path) {
+	for _, segment := range path.Segments() {
+		switch segment.Op {
+		case core.PathMoveTo:
+			c.op("%s %s m",
+				pdfobj.Num(segment.Points[0].X), pdfobj.Num(segment.Points[0].Y))
+
+		case core.PathLineTo:
+			c.op("%s %s l",
+				pdfobj.Num(segment.Points[0].X), pdfobj.Num(segment.Points[0].Y))
+
+		case core.PathCurveTo:
+			c.curve(
+				segment.Points[0].X, segment.Points[0].Y,
+				segment.Points[1].X, segment.Points[1].Y,
+				segment.Points[2].X, segment.Points[2].Y)
+
+		case core.PathClose:
+			c.op("h")
+		}
+	}
+}
+
+// withPathAlpha selects a transparency state when either half of the style needs
+// one, wrapped in q/Q so it cannot leak into later drawing.
+func (c *PDFCanvas) withPathAlpha(style core.PathStyle, draw func()) {
+	fillAlpha, strokeAlpha := uint8(255), uint8(255)
+	if style.Fills() {
+		fillAlpha = style.Fill.A
+	}
+	if style.Strokes() {
+		strokeAlpha = style.Stroke.A
+	}
+
+	// A stroke's width, cap, join and dash are graphics state too, so the save is
+	// needed whenever the path is stroked at all — not only when it is
+	// translucent — or a dash pattern would persist into unrelated drawing.
+	if fillAlpha == 255 && strokeAlpha == 255 && !style.Strokes() {
+		draw()
+		return
+	}
+
+	c.Save()
+	if fillAlpha != 255 || strokeAlpha != 255 {
+		c.op("%s gs", pdfobj.Name(c.builder.alphaResource(fillAlpha, strokeAlpha)))
+	}
+	draw()
+	c.Restore()
 }
 
 func (c *PDFCanvas) curve(x1, y1, x2, y2, x3, y3 float64) {
@@ -272,7 +371,7 @@ func (c *PDFCanvas) withAlpha(col core.Color, draw func()) {
 		return
 	}
 	c.Save()
-	c.op("%s gs", pdfobj.Name(c.builder.alphaResource(col.A)))
+	c.op("%s gs", pdfobj.Name(c.builder.alphaResource(col.A, col.A)))
 	draw()
 	c.Restore()
 }

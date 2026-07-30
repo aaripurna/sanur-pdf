@@ -33,6 +33,14 @@ type Canvas interface {
 	// DrawRoundedRect fills a rectangle with a uniform corner radius.
 	DrawRoundedRect(pos Position, size Size, radius float64, fill Color)
 
+	// DrawPath paints an arbitrary outline, filled, stroked, or both according to
+	// the style.
+	//
+	// This is the primitive the rectangle and line calls above cannot express:
+	// arcs, polygons, dashed rules and stroke joins. Anything that is not an
+	// axis-aligned box goes through here.
+	DrawPath(path *Path, style PathStyle)
+
 	// DrawLine strokes a straight line.
 	DrawLine(from, to Position, stroke Color, width float64)
 

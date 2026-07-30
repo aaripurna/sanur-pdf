@@ -923,3 +923,118 @@ func TestEveryPageCanBeReplaced(t *testing.T) {
 		t.Errorf("second template appears %d times, want 1", got)
 	}
 }
+
+// --- path primitives -------------------------------------------------------
+
+func TestDashedRulesReachTheContentStream(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Item().DashedLineHorizontal(1, sanur.Grey500, 4, 2)
+			c.Item().Height(30).DashedLineVertical(0.5, sanur.Grey500, 2)
+		})
+	})
+
+	wants(t, stream, "[4 2] 0 d", "[2] 0 d")
+}
+
+func TestPieSliceDrawsAsOneClosedPath(t *testing.T) {
+	// A pie slice is the case a DrawArc canvas primitive could not express: the
+	// arc has to join two radii inside a single closed path.
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+
+		centre := core.Position{X: 60, Y: 60}
+		slice := core.NewPath().
+			MoveTo(centre).
+			Arc(centre, 50, -90, 120).
+			Close()
+
+		p.Content().Size(120, 120).Path(slice, core.PathStyle{
+			Fill:   sanur.Indigo,
+			Stroke: sanur.White,
+			Width:  1,
+		})
+	})
+
+	// Fill and stroke in one operator, closed, with the arc subdivided into
+	// quarter turns.
+	wants(t, stream, "60 60 m", "\nh\nB\n")
+	if got := strings.Count(stream, " c\n"); got != 2 {
+		t.Errorf("a 120 degree sweep should emit 2 curves, got %d:\n%s", got, stream)
+	}
+}
+
+func TestDonutRingUsesTwoSubpaths(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+
+		centre := core.Position{X: 50, Y: 50}
+		ring := core.NewPath().
+			Circle(centre, 40).
+			Circle(centre, 20)
+
+		p.Content().Size(100, 100).Path(ring, core.Filled(sanur.Teal))
+	})
+
+	// Two closed subpaths, eight quarter turns between them. The even-odd versus
+	// nonzero winding question is the reader's to answer; what matters here is
+	// that both circles reach the stream as one path.
+	if got := strings.Count(stream, " c\n"); got != 8 {
+		t.Errorf("two circles should emit 8 curves, got %d:\n%s", got, stream)
+	}
+	if got := strings.Count(stream, "\nh\n"); got != 2 {
+		t.Errorf("expected 2 closed subpaths, got %d:\n%s", got, stream)
+	}
+}
+
+func TestPolygonAreaFill(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+
+		// The shape an area chart needs: a baseline, the series, and back down.
+		area := core.Polygon(
+			core.Position{X: 0, Y: 50},
+			core.Position{X: 20, Y: 20},
+			core.Position{X: 40, Y: 35},
+			core.Position{X: 60, Y: 10},
+			core.Position{X: 60, Y: 50},
+		)
+
+		p.Content().Size(60, 50).Path(area, core.Filled(sanur.RGBA(30, 100, 200, 90)))
+	})
+
+	wants(t, stream, "0 50 m", "20 20 l", "60 10 l", "\nh\nf\n")
+	// A translucent fill needs a graphics state, since colour operators carry no
+	// alpha.
+	wants(t, stream, "gs")
+}
+
+func TestPathShapeTakesTheOfferedBox(t *testing.T) {
+	// A path claims the space it is given rather than measuring its own extent, so
+	// a shape whose points sit far from the origin cannot silently resize its
+	// parent.
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+		p.Content().AlignLeft().Size(40, 25).Background(sanur.Grey200).
+			Path(core.Polyline(
+				core.Position{X: 0, Y: 0},
+				core.Position{X: 500, Y: 500},
+			), core.Stroked(sanur.Black, 1))
+	})
+
+	wants(t, stream, "0 0 40 25 re f")
+}
+
+func TestEmptyPathDrawsNothing(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0).Background(sanur.Transparent)
+		p.Content().Size(50, 50).Path(core.NewPath(), core.Filled(sanur.Red))
+	})
+
+	for _, op := range []string{"\nf\n", "\nS\n", "\nB\n"} {
+		if strings.Contains(stream, op) {
+			t.Errorf("an empty path painted %q:\n%s", op, stream)
+		}
+	}
+}

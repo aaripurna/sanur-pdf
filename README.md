@@ -102,6 +102,7 @@ All paths below are relative to `github.com/aaripurna/sanur-pdf`.
 | `.` (`sanur`) | Fluent API: `Document`, `Page`, `Container`, styles, sizes, colours. |
 | `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`. No PDF knowledge. |
 | `elements` | Layout primitives implementing `core.Element`. |
+| `chart` | Static line, area, bar, pie and donut charts. Depends only on `core` and `fonts`. |
 | `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading. |
 | `render` | The PDF canvas, the discard canvas, image embedding. |
 | `internal/pdfobj` | PDF objects, streams, xref, trailer. |
@@ -166,7 +167,54 @@ child they just wrapped, so calls nest rather than overwrite.
 **Containers** — `Column`, `Row`, `Table`
 
 **Leaves** — `Text`, `StyledText`, `RichText`, `PageNumber`, `Image`, `ImageFit`,
-`LineHorizontal`, `LineVertical`, `PageBreak`, `Spacer`, `Empty`, `Element`
+`LineHorizontal`, `LineVertical`, `DashedLineHorizontal`, `DashedLineVertical`,
+`Path`, `PageBreak`, `Spacer`, `Empty`, `Element`
+
+### Paths
+
+Anything that is not an axis-aligned box goes through a path: arcs, polygons,
+dashed rules, stroke joins. A `core.Path` is a value built independently of any
+canvas, so shapes are reusable and their geometry is testable without rendering.
+
+```go
+centre := core.Position{X: 60, Y: 60}
+
+slice := core.NewPath().
+	MoveTo(centre).                  // pie slices start at the centre,
+	Arc(centre, 50, -90, 120).       // sweep the rim,
+	Close()                          // and close back along the second radius
+
+c.Item().Size(120, 120).Path(slice, core.PathStyle{
+	Fill:   sanur.Indigo,
+	Stroke: sanur.White,
+	Width:  1,
+})
+```
+
+`PathStyle` covers fill, stroke, width, caps, joins, dash pattern and fill rule in
+one struct. An invisible fill or a zero width simply omits that half, so the same
+type expresses fill-only, stroke-only and both — and where both apply they are
+painted in a single operator, so a translucent edge is not composited twice.
+
+Angles are degrees from the positive X axis, and because layout space has Y
+growing downwards, **a positive sweep turns clockwise** — the same direction as
+`Rotate`.
+
+Two things worth knowing:
+
+- **Rings need `EvenOdd: true`.** PDF fills by nonzero winding, so two circles
+  traced the same way both count the region between them as inside and it fills
+  solid. Even-odd counts crossings instead, so the inner circle punches a hole.
+  (Reversing the inner subpath with a negative sweep also works, but requires
+  reasoning about direction.)
+- **A path claims the box it is offered**, rather than measuring its own extent.
+  Using the bounding box would let a shape whose points sit far from the origin
+  silently resize its parent, so the caller constrains the box and draws within
+  it.
+
+Arcs are Bézier-approximated — PDF has no arc operator — subdivided at quarter
+turns, which keeps the deviation from a true circle under a thousandth of the
+radius.
 
 ### Rows
 
@@ -222,6 +270,62 @@ c.Item().RichText(func(t *sanur.TextBuilder) {
 Justification uses PDF's word-spacing operator, so a justified line costs one
 number rather than a repositioned run per word. The last line of a block is left
 flush.
+
+## Charts
+
+`chart` draws static charts as ordinary elements, so one goes wherever any other
+element goes — in a row beside a table, inside a bordered panel, in a column that
+paginates. The only thing a chart needs from its caller is a height, because a
+plot has no natural size of its own.
+
+```go
+c.Item().Height(190).Element(&chart.Line{
+	Categories: []string{"Jan", "Feb", "Mar", "Apr"},
+	Series: []chart.Series{
+		{Name: "Revenue", Values: []float64{31, 34, 32, 39}},
+		{Name: "Costs", Values: []float64{22, 23, 24, 24}},
+	},
+})
+```
+
+| Type | Notes |
+| --- | --- |
+| `Line` | One or more series; set `Area` to fill beneath them |
+| `Bar` | Grouped series, vertical or `Horizontal`, optional `CornerRadius` |
+| `Pie` | Set `InnerRadius` for a donut, with optional centre text |
+
+A zero `Style` resolves to the defaults, so a chart needs no configuration to
+look finished. Setting one field overrides only that field:
+
+```go
+Style: chart.Style{
+	Palette:   []core.Color{sanur.Hex("#0F766E"), sanur.Hex("#B45309")},
+	TickCount: 4,
+	Legend:    chart.LegendRight,
+	Format:    func(v float64) string { return fmt.Sprintf("%.0fms", v) },
+}
+```
+
+Three behaviours worth knowing:
+
+- **Axis ticks land on round numbers**, not on the data extremes. `Ticks` and
+  `NiceStep` are exported, along with `Scale` and `FormatValue`, since they are
+  pure arithmetic and useful when building a chart type of your own.
+- **Gutters are measured, not fixed.** The left gutter comes from the widest tick
+  label and a horizontal chart's from the longest category name, so a jump to
+  seven figures cannot silently overlap the plot.
+- **Bars and areas always include zero** in their axis. An axis starting at the
+  smallest value exaggerates every difference.
+
+Negative values work throughout `Line`, `Bar` and areas: the axis is drawn at zero
+whenever the data crosses it, negative bars hang the other side, and their labels
+are placed clear of the category names. `Pie` is the exception — a wedge cannot
+sweep backwards and still tile a circle, so a negative slice is **reported as an
+error** rather than dropped. Dropping it would rescale the remaining slices to
+100% and produce a chart that looks entirely plausible with data missing.
+
+`chart` depends only on `core` and `fonts` — never the root package — so the
+dependency runs one way and a future `c.Item().Chart(...)` wrapper stays possible.
 
 ## Fonts
 
@@ -293,14 +397,15 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 ## Examples
 
 ```
-make examples     # or: make invoice / make images / make report
+make examples     # or: make invoice / images / report / charts
 ```
 
 | Example | What it covers |
 | --- | --- |
 | `examples/invoice` | Tables that paginate, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
-| `examples/report` | `EveryPage` furniture, stat tiles, bar charts and sparklines built from primitives, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/report` | `EveryPage` furniture, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -345,17 +450,18 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-262 tests across six packages, at 95.7% statement coverage:
+341 tests across seven packages, at 95.4% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 102 | 102 | 100.0% |
-| `elements` | 554 | 535 | 96.6% |
-| `sanur` (root) | 377 | 363 | 96.3% |
+| `core` | 178 | 177 | 99.4% |
+| `elements` | 566 | 547 | 96.6% |
+| `sanur` (root) | 380 | 366 | 96.3% |
 | `internal/pdfobj` | 157 | 149 | 94.9% |
-| `render` | 272 | 257 | 94.5% |
+| `render` | 308 | 292 | 94.8% |
+| `chart` | 480 | 449 | 93.5% |
 | `fonts` | 174 | 159 | 91.4% |
-| **Total** | **1636** | **1565** | **95.7%** |
+| **Total** | **2243** | **2139** | **95.4%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -377,6 +483,11 @@ What the suite checks, and why in that particular way:
 - **Font metrics** are spot-checked against the published Adobe values, and the
   WinAnsi encoding is round-tripped over the 0x80–0x9F block where it diverges
   from Latin-1.
+- **Chart arithmetic** — tick selection, scaling, value formatting — is tested as
+  pure functions, with no canvas involved. Drawing is asserted through a recording
+  canvas that captures labels and their positions, so a collision between a
+  negative bar's label and its category label is caught without pinning
+  coordinates that any cosmetic change would break.
 - **Cross-axis resolution** is pinned per decorator. A row whose height came from
   a vertically centred cell would silently become page-tall — the layout still
   succeeds, it just looks wrong — so each `NaturalSize` forward is tested on its
@@ -398,6 +509,7 @@ missing, so the suite passes on a bare machine.
   font instead)
 - Font subsetting — embedded fonts are included whole
 - Multi-column text flow, and repeating a table header on every page
+- Stacked chart series, dual axes, time-based category axes, scatter and radar plots
 - Links, outlines, annotations, form fields, tagged/accessible output
 - Encryption, and PDF/A conformance
 - Gradients, dash patterns, and blend modes

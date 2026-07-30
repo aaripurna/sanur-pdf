@@ -21,6 +21,7 @@ var examples = []struct {
 	{"invoice", "./examples/invoice", 2},
 	{"images", "./examples/images", 2},
 	{"report", "./examples/report", 3},
+	{"charts", "./examples/charts", 5},
 }
 
 func TestExamplesProduceValidDocuments(t *testing.T) {

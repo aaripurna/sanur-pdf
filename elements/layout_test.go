@@ -383,6 +383,7 @@ func (render_noop) Rotate(float64)                                              
 func (render_noop) ClipRect(core.Position, core.Size)                             {}
 func (render_noop) DrawRect(core.Position, core.Size, core.Color)                 {}
 func (render_noop) DrawRoundedRect(core.Position, core.Size, float64, core.Color) {}
+func (render_noop) DrawPath(*core.Path, core.PathStyle)                           {}
 func (render_noop) DrawLine(core.Position, core.Position, core.Color, float64)    {}
 func (render_noop) DrawText(string, core.Position, core.TextStyle)                {}
 func (render_noop) DrawImage(core.Image, core.Position, core.Size)                {}

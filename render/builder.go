@@ -49,7 +49,9 @@ type Builder struct {
 	imageRefs  map[string]pdfobj.Ref
 	imageOrder []string
 
-	alphaNames map[uint8]string
+	// alphaNames is keyed by the fill and stroke opacity pair, since PDF carries
+	// the two separately and a stroked shape may differ from its fill.
+	alphaNames map[[2]uint8]string
 
 	meta Metadata
 }
@@ -68,7 +70,7 @@ func NewBuilder(meta Metadata, compress bool) *Builder {
 		fontRefs:   map[string]pdfobj.Ref{},
 		imageNames: map[string]string{},
 		imageRefs:  map[string]pdfobj.Ref{},
-		alphaNames: map[uint8]string{},
+		alphaNames: map[[2]uint8]string{},
 		meta:       meta,
 	}
 	// The page tree node is referenced by every page it contains, so its number
@@ -162,18 +164,19 @@ func (b *Builder) emitFont(p fonts.FontProgram) (pdfobj.Ref, error) {
 	return b.writer.AddDict(dict), nil
 }
 
-// alphaResource registers a graphics state for a given opacity.
+// alphaResource registers a graphics state for a fill and stroke opacity pair.
 //
 // PDF colour operators carry no alpha; transparency lives in a separate
 // ExtGState dictionary that has to be selected before drawing. One state per
-// distinct alpha value is pooled, since documents typically use a handful of
-// opacities across thousands of draw calls.
-func (b *Builder) alphaResource(a uint8) string {
-	if name, ok := b.alphaNames[a]; ok {
+// distinct pair is pooled, since documents typically use a handful of opacities
+// across thousands of draw calls.
+func (b *Builder) alphaResource(fill, stroke uint8) string {
+	key := [2]uint8{fill, stroke}
+	if name, ok := b.alphaNames[key]; ok {
 		return name
 	}
 	name := fmt.Sprintf("GS%d", len(b.alphaNames))
-	b.alphaNames[a] = name
+	b.alphaNames[key] = name
 	return name
 }
 
@@ -242,22 +245,26 @@ func (b *Builder) emitResources() pdfobj.Ref {
 	}
 
 	if len(b.alphaNames) > 0 {
-		// Map iteration is randomised, so the states are emitted in ascending
-		// alpha order to keep output byte-identical between runs.
-		alphas := make([]int, 0, len(b.alphaNames))
-		for a := range b.alphaNames {
-			alphas = append(alphas, int(a))
+		// Map iteration is randomised, so the states are emitted in a fixed order
+		// to keep output byte-identical between runs.
+		keys := make([][2]uint8, 0, len(b.alphaNames))
+		for key := range b.alphaNames {
+			keys = append(keys, key)
 		}
-		sort.Ints(alphas)
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i][0] != keys[j][0] {
+				return keys[i][0] < keys[j][0]
+			}
+			return keys[i][1] < keys[j][1]
+		})
 
 		states := pdfobj.NewDict()
-		for _, a := range alphas {
-			opacity := float64(a) / 255
+		for _, key := range keys {
 			state := pdfobj.NewDict().
 				SetName("Type", "ExtGState").
-				SetNum("ca", opacity).
-				SetNum("CA", opacity)
-			states.SetRef(b.alphaNames[uint8(a)], b.writer.AddDict(state))
+				SetNum("ca", float64(key[0])/255).
+				SetNum("CA", float64(key[1])/255)
+			states.SetRef(b.alphaNames[key], b.writer.AddDict(state))
 		}
 		resources.SetRef("ExtGState", b.writer.AddDict(states))
 	}

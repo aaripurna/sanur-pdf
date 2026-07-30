@@ -34,7 +34,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report
+examples: invoice images report charts
 
 .PHONY: invoice
 invoice:
@@ -47,6 +47,10 @@ images:
 .PHONY: report
 report:
 	go run ./examples/report report.pdf
+
+.PHONY: charts
+charts:
+	go run ./examples/charts charts.pdf
 
 .PHONY: clean
 clean:

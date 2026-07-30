@@ -160,7 +160,10 @@ func TestDrawRoundedRectEmitsCurves(t *testing.T) {
 	if got := strings.Count(stream, " c\n"); got != 4 {
 		t.Errorf("emitted %d curves, want 4 (one per corner); got:\n%s", got, stream)
 	}
-	requireContains(t, stream, "h f")
+	// The outline is closed and then filled. These are separate operators because
+	// a rounded rectangle is a filled path like any other, sharing its corner
+	// geometry with core.RoundedRect rather than duplicating it here.
+	requireContains(t, stream, "\nh\nf\n")
 }
 
 func TestRoundedRectWithZeroRadiusFallsBackToPlainFill(t *testing.T) {
@@ -895,5 +898,288 @@ func TestLoadImageFSReadsFromAFilesystem(t *testing.T) {
 
 	if _, err := render.LoadImageFS(fsys, "gone", "art/missing.png"); err == nil {
 		t.Error("expected an error for a name not in the filesystem")
+	}
+}
+
+// --- paths ------------------------------------------------------------------
+
+func TestDrawPathEmitsConstructionOperators(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		path := core.NewPath().
+			MoveTo(core.Position{X: 10, Y: 20}).
+			LineTo(core.Position{X: 30, Y: 20}).
+			CurveTo(
+				core.Position{X: 40, Y: 20},
+				core.Position{X: 50, Y: 30},
+				core.Position{X: 50, Y: 40}).
+			Close()
+
+		c.DrawPath(path, core.Filled(core.RGB(255, 0, 0)))
+	})
+
+	requireContains(t, stream,
+		"10 20 m",
+		"30 20 l",
+		"40 20 50 30 50 40 c",
+		"\nh\nf\n")
+}
+
+func TestDrawPathSelectsThePaintingOperator(t *testing.T) {
+	black := core.RGB(0, 0, 0)
+
+	for _, tc := range []struct {
+		name   string
+		style  core.PathStyle
+		want   string
+		absent string
+	}{
+		{"fill only", core.Filled(black), "\nf\n", "\nS\n"},
+		{"stroke only", core.Stroked(black, 2), "\nS\n", "\nf\n"},
+		// One operator does both, so the shared boundary is composited once
+		// rather than twice.
+		{"both", core.PathStyle{Fill: black, Stroke: black, Width: 1}, "\nB\n", "\nf\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := drawOn(t, func(c *render.PDFCanvas) {
+				c.DrawPath(core.Polygon(
+					core.Position{X: 0, Y: 0},
+					core.Position{X: 10, Y: 0},
+					core.Position{X: 10, Y: 10},
+				), tc.style)
+			})
+
+			requireContains(t, stream, tc.want)
+			if strings.Contains(stream, tc.absent) {
+				t.Errorf("stream should not contain %q:\n%s", tc.absent, stream)
+			}
+		})
+	}
+}
+
+func TestDrawPathSkipsNothingToPaint(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		square := core.Polygon(
+			core.Position{X: 0, Y: 0},
+			core.Position{X: 5, Y: 0},
+			core.Position{X: 5, Y: 5})
+
+		// An empty path, an invisible style, and a stroke with no width all put no
+		// ink on the page.
+		c.DrawPath(core.NewPath(), core.Filled(core.RGB(0, 0, 0)))
+		c.DrawPath(square, core.PathStyle{})
+		c.DrawPath(square, core.PathStyle{Stroke: core.RGB(0, 0, 0)})
+		c.DrawPath(nil, core.Filled(core.RGB(0, 0, 0)))
+	})
+
+	for _, op := range []string{"\nf\n", "\nS\n", "\nB\n", " m\n"} {
+		if strings.Contains(stream, op) {
+			t.Errorf("expected no painting, but found %q:\n%s", op, stream)
+		}
+	}
+}
+
+func TestStrokeStateOperators(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(
+			core.Polyline(core.Position{}, core.Position{X: 50, Y: 50}),
+			core.PathStyle{
+				Stroke:    core.RGB(0, 0, 255),
+				Width:     3,
+				Cap:       core.CapRound,
+				Join:      core.JoinBevel,
+				Dash:      []float64{4, 2},
+				DashPhase: 1,
+			})
+	})
+
+	requireContains(t, stream,
+		"0 0 1 RG",
+		"3 w",
+		"1 J", // round cap
+		"2 j", // bevel join
+		"[4 2] 1 d")
+}
+
+func TestStrokeStateOmitsDefaults(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(
+			core.Polyline(core.Position{}, core.Position{X: 10, Y: 0}),
+			core.Stroked(core.RGB(0, 0, 0), 1))
+	})
+
+	// Butt caps, mitre joins and a solid line are the PDF defaults, so emitting
+	// them would be noise.
+	for _, op := range []string{" J", " j", " d", " M"} {
+		if strings.Contains(stream, op) {
+			t.Errorf("default stroke state should not be emitted, found %q:\n%s", op, stream)
+		}
+	}
+	requireContains(t, stream, "1 w")
+}
+
+func TestAllZeroDashIsTreatedAsSolid(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(
+			core.Polyline(core.Position{}, core.Position{X: 10, Y: 0}),
+			core.PathStyle{Stroke: core.RGB(0, 0, 0), Width: 1, Dash: []float64{0, 0}})
+	})
+
+	// A pattern of zeros would draw nothing at all and is rejected by readers.
+	if strings.Contains(stream, " d\n") {
+		t.Errorf("an all-zero dash pattern should not be emitted:\n%s", stream)
+	}
+}
+
+func TestMiterLimitOnlyWhenItDiffersFromTheDefault(t *testing.T) {
+	custom := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(core.Polyline(core.Position{}, core.Position{X: 10, Y: 10}),
+			core.PathStyle{Stroke: core.RGB(0, 0, 0), Width: 2, MiterLimit: 4})
+	})
+	requireContains(t, custom, "4 M")
+
+	def := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(core.Polyline(core.Position{}, core.Position{X: 10, Y: 10}),
+			core.PathStyle{Stroke: core.RGB(0, 0, 0), Width: 2,
+				MiterLimit: core.DefaultMiterLimit})
+	})
+	if strings.Contains(def, " M\n") {
+		t.Errorf("the default miter limit should not be emitted:\n%s", def)
+	}
+}
+
+func TestStrokeStateIsScopedToItsPath(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(core.Polyline(core.Position{}, core.Position{X: 10, Y: 0}),
+			core.PathStyle{Stroke: core.RGB(0, 0, 0), Width: 6, Dash: []float64{3}})
+		c.DrawRect(core.Position{}, core.Size{Width: 5, Height: 5}, core.RGB(0, 0, 0))
+	})
+
+	// Width, cap, join and dash are graphics state. Without a q/Q around the
+	// stroke, the dash pattern would persist into everything drawn afterwards.
+	dashAt := strings.Index(stream, " d\n")
+	restoreAt := strings.Index(stream[dashAt:], "\nQ\n")
+	rectAt := strings.Index(stream, "re f")
+
+	if dashAt < 0 || restoreAt < 0 || rectAt < 0 {
+		t.Fatalf("expected a dashed stroke, a restore and a rectangle:\n%s", stream)
+	}
+	if dashAt+restoreAt > rectAt {
+		t.Errorf("the stroke state was not restored before the next shape:\n%s", stream)
+	}
+}
+
+func TestPathAlphaUsesSeparateFillAndStrokeOpacity(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	canvas.DrawPath(
+		core.Polygon(core.Position{}, core.Position{X: 10}, core.Position{X: 10, Y: 10}),
+		core.PathStyle{
+			Fill:   core.RGBA(255, 0, 0, 128),
+			Stroke: core.RGBA(0, 0, 255, 64),
+			Width:  1,
+		})
+
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// PDF carries fill and stroke opacity separately, so a translucent fill under
+	// a differently translucent outline needs both set on one state.
+	requireContains(t, string(data), "/ca 0.502", "/CA 0.251")
+}
+
+func TestArcRendersAsCurves(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		// A pie slice: centre, out to the rim, sweep, close.
+		slice := core.NewPath().
+			MoveTo(core.Position{X: 100, Y: 100}).
+			Arc(core.Position{X: 100, Y: 100}, 50, 0, 90).
+			Close()
+
+		c.DrawPath(slice, core.Filled(core.RGB(0, 128, 255)))
+	})
+
+	requireContains(t, stream, "100 100 m", "150 100 l", "\nh\nf\n")
+	if got := strings.Count(stream, " c\n"); got != 1 {
+		t.Errorf("a quarter turn should emit 1 curve, got %d:\n%s", got, stream)
+	}
+}
+
+func TestRoundedRectDelegatesToThePathAPI(t *testing.T) {
+	// The corner geometry lives in core.RoundedRect, so both routes must agree
+	// exactly — otherwise a background and a chart panel would round differently.
+	viaHelper := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRoundedRect(core.Position{X: 5, Y: 5},
+			core.Size{Width: 80, Height: 40}, 6, core.RGB(10, 20, 30))
+	})
+
+	viaPath := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(
+			core.RoundedRect(core.Position{X: 5, Y: 5},
+				core.Size{Width: 80, Height: 40}, 6),
+			core.Filled(core.RGB(10, 20, 30)))
+	})
+
+	if viaHelper != viaPath {
+		t.Errorf("DrawRoundedRect and the path API disagree:\n--- helper ---\n%s\n--- path ---\n%s",
+			viaHelper, viaPath)
+	}
+}
+
+func TestEvenOddFillUsesStarredOperators(t *testing.T) {
+	// A ring is two circles wound the same way. Under nonzero winding the middle
+	// counts as inside and fills solid, so the hole only appears with even-odd.
+	ring := func() *core.Path {
+		centre := core.Position{X: 50, Y: 50}
+		return core.NewPath().Circle(centre, 40).Circle(centre, 20)
+	}
+
+	nonzero := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(ring(), core.Filled(core.RGB(0, 128, 128)))
+	})
+	requireContains(t, nonzero, "\nf\n")
+	if strings.Contains(nonzero, "f*") {
+		t.Errorf("nonzero winding should use the plain operator:\n%s", nonzero)
+	}
+
+	evenOdd := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(ring(), core.PathStyle{Fill: core.RGB(0, 128, 128), EvenOdd: true})
+	})
+	requireContains(t, evenOdd, "\nf*\n")
+}
+
+func TestEvenOddAppliesToFillAndStrokeToo(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		centre := core.Position{X: 40, Y: 40}
+		c.DrawPath(
+			core.NewPath().Circle(centre, 30).Circle(centre, 15),
+			core.PathStyle{
+				Fill:    core.RGB(0, 0, 0),
+				Stroke:  core.RGB(255, 255, 255),
+				Width:   1,
+				EvenOdd: true,
+			})
+	})
+
+	requireContains(t, stream, "\nB*\n")
+}
+
+func TestStrokeOnlyIgnoresTheFillRule(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawPath(
+			core.Polygon(core.Position{}, core.Position{X: 10}, core.Position{X: 10, Y: 10}),
+			core.PathStyle{Stroke: core.RGB(0, 0, 0), Width: 1, EvenOdd: true})
+	})
+
+	// A stroke traces the outline, so there is no interior for a fill rule to
+	// classify; the operator must not be starred.
+	requireContains(t, stream, "\nS\n")
+	if strings.Contains(stream, "S*") {
+		t.Errorf("a stroke has no fill rule:\n%s", stream)
 	}
 }
