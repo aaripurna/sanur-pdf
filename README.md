@@ -512,4 +512,14 @@ missing, so the suite passes on a bare machine.
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
 - Links, outlines, annotations, form fields, tagged/accessible output
 - Encryption, and PDF/A conformance
-- Gradients, dash patterns, and blend modes
+- Gradients and blend modes (dash patterns, arcs and paths are implemented)
+- Clipping to an arbitrary path — `Clip` takes a rectangle only
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+The only runtime dependency, `golang.org/x/image` (and `golang.org/x/text` beneath
+it), is BSD-3-Clause, which imposes nothing MIT does not. Attribution for the
+standard-14 font metrics is noted in `fonts/standard14.go`: the advance widths come
+from Adobe's published AFM files, which Adobe released for unrestricted use.
