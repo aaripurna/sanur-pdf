@@ -231,6 +231,40 @@ func StringBytes(data []byte) string {
 	return b.String()
 }
 
+// HexString formats bytes as a hexadecimal string.
+//
+// This is the form composite text uses. Its operands are two-byte glyph numbers
+// rather than characters, so most of them fall outside the printable range and a
+// literal string would spend four bytes on an octal escape for nearly every one.
+// Hex is exactly two characters per byte regardless, and it needs no escaping at
+// all, which means no way to get the escaping wrong.
+func HexString(data []byte) string {
+	const digits = "0123456789ABCDEF"
+
+	out := make([]byte, 0, len(data)*2+2)
+	out = append(out, '<')
+	for _, c := range data {
+		out = append(out, digits[c>>4], digits[c&0x0F])
+	}
+	return string(append(out, '>'))
+}
+
+// UTF16BEHex formats a rune as the hex string a CMap uses to name a character,
+// including the angle brackets.
+//
+// The encoding is UTF-16BE, so anything outside the basic multilingual plane
+// occupies two units as a surrogate pair — an emoji or a rarer CJK ideograph is
+// four bytes here, not two.
+func UTF16BEHex(r rune) string {
+	var b strings.Builder
+	b.WriteByte('<')
+	for _, unit := range utf16.Encode([]rune{r}) {
+		fmt.Fprintf(&b, "%04X", unit)
+	}
+	b.WriteByte('>')
+	return b.String()
+}
+
 // Array formats a PDF array from pre-formatted elements.
 func Array(items ...string) string {
 	return "[" + strings.Join(items, " ") + "]"

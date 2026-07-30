@@ -34,12 +34,21 @@ type trueTypeFont struct {
 	italic     bool
 	bold       bool
 
-	mu       sync.Mutex
-	buf      sfnt.Buffer
-	advances map[rune]float64 // font units
-	hasGlyph map[rune]bool
+	mu  sync.Mutex
+	buf sfnt.Buffer
 
-	// missing is the advance used for runes the font has no glyph for.
+	// The caches are keyed by glyph rather than by rune, because both the
+	// measurement path and the PDF width array need advances per glyph and several
+	// runes routinely share one.
+	glyphs   map[rune]uint16 // 0 means the font has no glyph for the rune
+	advances map[uint16]float64
+
+	// substitute is the glyph drawn for a rune the font cannot represent: the
+	// question mark where the font has one, .notdef otherwise. Drawing something
+	// visible is deliberate — silently dropping characters hides missing content.
+	substitute uint16
+
+	// missing is the advance used when even the substitute cannot be resolved.
 	missing float64
 }
 
@@ -73,8 +82,8 @@ func RegisterTrueType(name string, data []byte) (core.Font, error) {
 		data:     owned,
 		sf:       sf,
 		upem:     float64(sf.UnitsPerEm()),
-		advances: make(map[rune]float64),
-		hasGlyph: make(map[rune]bool),
+		glyphs:   make(map[rune]uint16),
+		advances: make(map[uint16]float64),
 	}
 	if f.upem == 0 {
 		return nil, fmt.Errorf("sanur/fonts: %q reports zero units per em", name)
@@ -131,6 +140,13 @@ func RegisterTrueType(name string, data []byte) (core.Font, error) {
 		f.missing = adv
 	}
 
+	// The substitute is resolved once, after the caches are warm, so that neither
+	// the encoder nor the measurement path has to work it out per call — and so both
+	// agree on it, which is what keeps a measured width matching a drawn one.
+	if gid, ok := f.glyphIndex('?'); ok {
+		f.substitute = gid
+	}
+
 	return f, nil
 }
 
@@ -163,37 +179,68 @@ func fixedToFloat(v fixed.Int26_6) float64 {
 	return float64(v) / 64
 }
 
-// advanceUnits returns the advance width of r in font units, and whether the
-// font actually has a glyph for it.
-func (f *trueTypeFont) advanceUnits(r rune) (float64, bool) {
+// glyphIndex returns the glyph ID for r, and whether the font has one.
+//
+// sfnt resolves an index through the cmap table on every call and needs a scratch
+// buffer that cannot be shared across goroutines, so the answer is cached: laying
+// out a paragraph touches the same few dozen runes thousands of times.
+func (f *trueTypeFont) glyphIndex(r rune) (uint16, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if adv, ok := f.advances[r]; ok {
-		return adv, f.hasGlyph[r]
+	if gid, ok := f.glyphs[r]; ok {
+		return gid, gid != 0
 	}
-
-	ppem := fixed.Int26_6(f.sf.UnitsPerEm() << 6)
 
 	gid, err := f.sf.GlyphIndex(&f.buf, r)
 	if err != nil || gid == 0 {
 		// Glyph index 0 is .notdef: the font has no glyph for this rune.
-		f.advances[r] = f.missing
-		f.hasGlyph[r] = false
-		return f.missing, false
+		f.glyphs[r] = 0
+		return 0, false
 	}
 
-	adv, err := f.sf.GlyphAdvance(&f.buf, gid, ppem, font.HintingNone)
+	f.glyphs[r] = uint16(gid)
+	return uint16(gid), true
+}
+
+// glyphAdvanceUnits returns a glyph's advance in font units.
+func (f *trueTypeFont) glyphAdvanceUnits(gid uint16) float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if adv, ok := f.advances[gid]; ok {
+		return adv
+	}
+
+	// Asking at a ppem equal to the em size makes sfnt answer in font units.
+	ppem := fixed.Int26_6(f.sf.UnitsPerEm() << 6)
+
+	adv, err := f.sf.GlyphAdvance(&f.buf, sfnt.GlyphIndex(gid), ppem, font.HintingNone)
 	if err != nil {
-		f.advances[r] = f.missing
-		f.hasGlyph[r] = false
-		return f.missing, false
+		f.advances[gid] = f.missing
+		return f.missing
 	}
 
 	units := fixedToFloat(adv)
-	f.advances[r] = units
-	f.hasGlyph[r] = true
-	return units, true
+	f.advances[gid] = units
+	return units
+}
+
+// advanceUnits returns the advance width of r in font units, and whether the
+// font actually has a glyph for it.
+//
+// A rune the font cannot represent is measured as the substitute glyph, because the
+// substitute is what will be drawn. Measuring one glyph and drawing another is how
+// a line ends up overrunning its column.
+func (f *trueTypeFont) advanceUnits(r rune) (float64, bool) {
+	gid, ok := f.glyphIndex(r)
+	if !ok {
+		if f.substitute == 0 {
+			return f.missing, false
+		}
+		return f.glyphAdvanceUnits(f.substitute), false
+	}
+	return f.glyphAdvanceUnits(gid), true
 }
 
 func (f *trueTypeFont) Name() string { return f.name }
@@ -226,23 +273,33 @@ func (f *trueTypeFont) LineHeight(size float64) float64 {
 
 // Program implements Programmable, converting the font's own units into the
 // 1/1000 em space PDF descriptors are defined in.
+//
+// An embedded font is always described as composite. The alternative — a simple
+// font when the document happens to stay inside WinAnsi and a composite one
+// otherwise — cannot work: the encoding decides what the bytes in a content stream
+// mean, and those bytes are written as each string is drawn, long before the last
+// page has revealed whether anything needed a Cyrillic glyph. One path also means
+// one path to test.
+//
+// The program bytes are absent here. They depend on which glyphs the document used,
+// which is only known once every page has been drawn, so the writer asks for them
+// separately through GlyphSource.Subset.
 func (f *trueTypeFont) Program() FontProgram {
 	scale := func(v float64) int { return int(v / f.upem * 1000) }
 
 	p := FontProgram{
 		BaseName:  f.name,
-		Data:      f.data,
-		FirstChar: 0x20,
-		LastChar:  0xFF,
+		Composite: true,
 		Flags:     FlagNonsymbolic,
 		BBox: [4]int{
 			scale(f.bbox[0]), scale(f.bbox[1]),
 			scale(f.bbox[2]), scale(f.bbox[3]),
 		},
-		Ascent:    scale(f.ascent),
-		Descent:   -scale(f.descent),
-		CapHeight: scale(f.capHeight),
-		StemV:     80,
+		Ascent:       scale(f.ascent),
+		Descent:      -scale(f.descent),
+		CapHeight:    scale(f.capHeight),
+		StemV:        80,
+		DefaultWidth: scale(f.missing),
 	}
 
 	if f.fixedPitch {
@@ -261,13 +318,5 @@ func (f *trueTypeFont) Program() FontProgram {
 		p.StemV = 160
 	}
 
-	for c := p.FirstChar; c <= p.LastChar; c++ {
-		r := RuneForWinAnsiCode(byte(c))
-		if r == undefinedRune {
-			continue
-		}
-		units, _ := f.advanceUnits(r)
-		p.Widths[c] = scale(units)
-	}
 	return p
 }

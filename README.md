@@ -106,7 +106,7 @@ All paths below are relative to `github.com/aaripurna/sanur-pdf`.
 | `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`. No PDF knowledge. |
 | `elements` | Layout primitives implementing `core.Element`. |
 | `chart` | Static line, area, bar, pie and donut charts. Depends only on `core` and `fonts`. |
-| `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading, the name registry. |
+| `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading and subsetting, the name registry. |
 | `theme` | Document styling loaded from JSON. Depends on `core`, `fonts` and `chart`. |
 | `render` | The PDF canvas, the discard canvas, image embedding. |
 | `internal/pdfobj` | PDF objects, streams, xref, trailer. |
@@ -525,9 +525,85 @@ Grouping faces into a `Family` means `.Bold()` picks the real bold font rather
 than letting a reader synthesise one by smearing the regular outlines. An
 incomplete family degrades to the nearest available face.
 
-Text is encoded as WinAnsi, which covers Latin-1 plus the typographic
-punctuation real documents use. Runes outside it become `?` — visibly wrong
-rather than silently missing. Other scripts need a TrueType font.
+### The two kinds of font, and why it matters
+
+A registered font is not just a different typeface — it is a different mechanism,
+and which one you use decides what the document is able to say.
+
+| | Built-in (standard-14) | Registered (TrueType/OpenType) |
+| --- | --- | --- |
+| In the file | A name; the reader supplies the outlines | A subsetted program, embedded |
+| Addressed by | One byte, through WinAnsi | Two bytes, by glyph identifier |
+| Reachable characters | 224 | every glyph the font has |
+| Added bytes | none | tens of kilobytes |
+
+**WinAnsi is Windows code page 1252**, so what a built-in font shuts out is not just
+the exotic. It is Polish (`ł ż ń ę`), Czech (`ř ě ů ď`), Slovak, Hungarian (`ű ő`),
+Turkish (`ı ş ğ`), Romanian (`ș ț`), Vietnamese, all of Greek and all of Cyrillic —
+plus the arrows and mathematical operators that ordinary documents want. Every one of
+those becomes `?` in a built-in face. Register a font and they all work:
+
+```go
+face, _ := fonts.LoadTrueTypeFile("Inter", "Inter-Regular.ttf")
+p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(11))
+
+c.Item().Text("Съешь же ещё этих мягких французских булок")
+c.Item().Text("Ξεσκεπάζω την ψυχοφθόρα βδελυγμία")
+c.Item().Text("Zażółć gęślą jaźń · Příšerně žluťoučký kůň · Pijamalı şoföre")
+```
+
+`examples/scripts` sets the same twelve lines twice, once in each kind of font, so the
+difference is visible on one page.
+
+### Composite fonts and subsetting
+
+Every registered font is embedded as a PDF **composite font**: a `Type0` wrapper with
+`Identity-H` encoding over a CID descendant, so a text string is a sequence of
+two-byte glyph identifiers rather than characters in a code page.
+
+That decision is not conditional. Emitting a simple font when a document happens to
+stay inside WinAnsi and a composite one otherwise cannot work, because the encoding
+decides what the bytes in a content stream mean, and those bytes are written as each
+string is drawn — long before the last page has revealed whether anything needed a
+Cyrillic glyph. One path also means one path to test.
+
+Two things come with it:
+
+- **A `/ToUnicode` map**, so the text is still text. A composite font addresses glyphs
+  by a number that means nothing outside that font; without the map a reader has a
+  page it can draw and cannot read — copying a paragraph yields nothing usable and a
+  full-text index sees an empty document.
+- **Subsetting.** Only the glyphs the document actually drew are embedded, with their
+  identifiers left where the font put them. Arial is 773 kB on disk; a page of mixed
+  Latin, Cyrillic and Greek from it comes to about 14 kB. The name carries the
+  six-letter subset tag PDF requires, derived from the glyph list so that two
+  documents holding different subsets of one typeface cannot be merged into a font
+  that draws blanks for half of them.
+
+OpenType fonts with PostScript outlines (`.otf`, a `CFF ` table) are embedded whole,
+as `/FontFile3` under a `CIDFontType0` descendant. Subsetting one means rewriting
+charstrings and the private dictionaries they depend on — a different and much larger
+job than trimming a `glyf` table, where a subtle mistake produces a font that renders
+incorrectly rather than one that fails to load.
+
+### What is not done
+
+Sanur maps each rune to one glyph and advances by its width. It applies none of a
+font's layout tables, which means:
+
+- **No bidirectional reordering.** Hebrew and Arabic draw in the order the runes
+  appear, so the glyphs are right and their order is not.
+- **No shaping.** Arabic letters will not join; Indic scripts will not reorder or
+  form conjuncts.
+- **No ligatures, small capitals, alternates or kerning pairs.**
+
+Those need a text-shaping engine (HarfBuzz's job), which is a larger undertaking than
+the rest of this library. Left-to-right alphabetic scripts — Latin in all its
+extensions, Greek, Cyrillic, and CJK where the font covers it — need none of it and
+work today.
+
+A rune the font has no glyph for becomes `?`: visibly wrong rather than silently
+missing, which is the same choice the built-in faces make.
 
 ## Colour, for screen and for print
 
@@ -629,7 +705,7 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 ## Examples
 
 ```
-make examples     # or: make invoice / images / report / charts / themed / print
+make examples     # or: make invoice / images / report / charts / themed / print / scripts
 ```
 
 | Example | What it covers |
@@ -640,6 +716,7 @@ make examples     # or: make invoice / images / report / charts / themed / print
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
+| `examples/scripts` | Twelve languages from one registered font, subsetted 24× smaller than the files it came from, and the same text in a built-in font for comparison |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -684,19 +761,19 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-534 tests across eight packages, at 94.9% statement coverage:
+577 tests across eight packages, at 95.1% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 272 | 269 | 98.9% |
 | `sanur` (root) | 452 | 434 | 96.0% |
+| `internal/pdfobj` | 184 | 176 | 95.7% |
 | `elements` | 660 | 630 | 95.5% |
-| `internal/pdfobj` | 172 | 164 | 95.3% |
+| `render` | 586 | 555 | 94.7% |
+| `fonts` | 502 | 473 | 94.2% |
 | `theme` | 181 | 170 | 93.9% |
-| `render` | 512 | 480 | 93.8% |
 | `chart` | 479 | 448 | 93.5% |
-| `fonts` | 219 | 202 | 92.2% |
-| **Total** | **2947** | **2797** | **94.9%** |
+| **Total** | **3316** | **3155** | **95.1%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -741,6 +818,18 @@ What the suite checks, and why in that particular way:
   is caught by the plates that come back inked. `cmyk(100, 0, 0, 100)` and
   `cmyk(0, 0, 0, 100)` are the same `#000000` in RGB and look identical in a
   viewer; only the separations tell them apart.
+- **Non-Latin text is checked by extracting it again.** `pdftotext` reads the
+  document back and the result is compared against the source strings, which fails if
+  the glyph identifiers are wrong, if the `/ToUnicode` map is missing or malformed, or
+  if the text was encoded as single bytes. `pdffonts` confirms poppler sees an
+  embedded, subsetted font with a Unicode map rather than a type mismatch — the check
+  that caught `.otf` files being written to `/FontFile2`, which Ghostscript accepts
+  silently.
+- **The subsetter is verified against the original font's bytes.** For every retained
+  glyph, the outline in the subset must be byte-identical to the outline it came from,
+  and `hmtx` must be exactly the size `hhea` and `maxp` imply. A subsetter that shifts
+  an outline by one byte produces a font that loads, reports plausible metrics and
+  draws the wrong shapes, which is far harder to notice than one that fails.
 - **Real interpreters** parse the output. Ghostscript and `pdftotext` run where
   installed, which is the only way to catch a structurally plausible file that no
   reader will actually open, and to confirm the text is text rather than shapes.
@@ -756,7 +845,10 @@ missing, so the suite passes on a bare machine.
 
 - Standard-14 Times (its metrics are not reproduced here; register a TrueType
   font instead)
-- Font subsetting — embedded fonts are included whole
+- Text shaping and bidirectional reordering — right-to-left and complex scripts draw
+  in logical order with no joining, reordering or ligatures (see Fonts above)
+- Subsetting of PostScript-outline fonts — a `.otf` with CFF outlines is embedded
+  whole, while TrueType outlines are subsetted
 - Multi-column text flow
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
 - Page numbers in a table of contents (destinations resolve after layout)

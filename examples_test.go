@@ -29,6 +29,18 @@ var examples = []struct {
 	// The print sheet is a designed one-pager: content spilling onto a second sheet
 	// would take the crop marks with it and still pass every other check here.
 	maxPages int
+
+	// drawsSubstitutes exempts an example from the question-mark check.
+	//
+	// Exactly one example needs it, and for a good reason: the scripts example sets
+	// the same text twice, once in a built-in font that cannot represent it, so the
+	// substitution is the thing being demonstrated. Naming the exemption here keeps
+	// the check strict everywhere else, which is the point — a global relaxation
+	// would silently cover the cases it was written to catch.
+	drawsSubstitutes bool
+
+	// needsFont skips an example that cannot run without a system font.
+	needsFont bool
 }{
 	{name: "invoice", pkg: "./examples/invoice", minPages: 2},
 	{name: "images", pkg: "./examples/images", minPages: 2},
@@ -36,6 +48,12 @@ var examples = []struct {
 	{name: "charts", pkg: "./examples/charts", minPages: 5},
 	{name: "themed", pkg: "./examples/themed", minPages: 1},
 	{name: "print", pkg: "./examples/print", minPages: 1, maxPages: 1},
+	{
+		name: "scripts", pkg: "./examples/scripts",
+		minPages: 2, maxPages: 2,
+		drawsSubstitutes: true,
+		needsFont:        true,
+	},
 }
 
 func TestExamplesProduceValidDocuments(t *testing.T) {
@@ -45,6 +63,13 @@ func TestExamplesProduceValidDocuments(t *testing.T) {
 
 	for _, example := range examples {
 		t.Run(example.name, func(t *testing.T) {
+			if example.needsFont {
+				// The example searches the usual system locations and fails with
+				// instructions when it finds nothing, which is right for a person
+				// running it and wrong for a test suite on a bare machine.
+				embeddedFont(t, "ExampleFontProbe")
+			}
+
 			out := filepath.Join(t.TempDir(), example.name+".pdf")
 
 			cmd := exec.Command("go", "run", example.pkg, out)
@@ -75,7 +100,9 @@ func TestExamplesProduceValidDocuments(t *testing.T) {
 					example.name, pages, example.maxPages)
 			}
 
-			assertNoSubstitutedGlyphs(t, example.name, data)
+			if !example.drawsSubstitutes {
+				assertNoSubstitutedGlyphs(t, example.name, data)
+			}
 
 			assertRendersCleanly(t, example.name, data)
 		})

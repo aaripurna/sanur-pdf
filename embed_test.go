@@ -86,10 +86,28 @@ func TestEmbeddedTrueTypeFontRenders(t *testing.T) {
 		t.Fatalf("generating document: %v", err)
 	}
 
-	for _, want := range []string{"/FontFile2", "/FontDescriptor", "/Subtype /TrueType", "/Widths"} {
+	// An embedded font is emitted as a composite font: a Type0 wrapper with a CID
+	// descendant, addressed by glyph ID rather than through a single-byte encoding.
+	for _, want := range []string{
+		"/Subtype /Type0",
+		"/Encoding /Identity-H",
+		"/Subtype /CIDFontType2",
+		"/CIDToGIDMap /Identity",
+		"/FontFile2",
+		"/FontDescriptor",
+		"/ToUnicode",
+		"/W [",
+	} {
 		if !bytes.Contains(data, []byte(want)) {
-			t.Errorf("output is missing %q, so the font was not embedded", want)
+			t.Errorf("output is missing %q, so the font was not embedded as a composite font", want)
 		}
+	}
+
+	// The single-byte apparatus must be gone. Leaving a /Widths array or a
+	// WinAnsi encoding on a Type0 font is the kind of leftover a reader may act on,
+	// and it would mean the two code paths had been mixed.
+	if bytes.Contains(data, []byte("/Subtype /TrueType")) {
+		t.Error("the simple-font path was used for an embedded font")
 	}
 
 	checkWithGhostscript(t, data)

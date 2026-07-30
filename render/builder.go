@@ -11,7 +11,6 @@ import (
 	"sort"
 
 	"github.com/aaripurna/sanur-pdf/core"
-	"github.com/aaripurna/sanur-pdf/fonts"
 	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
@@ -41,9 +40,11 @@ type Builder struct {
 	pages    []pageEntry
 	pagesRef pdfobj.Ref
 
-	fontNames map[string]string // font identity -> resource name
-	fontRefs  map[string]pdfobj.Ref
-	fontOrder []string
+	// Fonts are keyed by identity and emitted last, not on first use: a composite
+	// font's width array and embedded program depend on which glyphs the document
+	// turned out to need.
+	fontsByID map[string]*fontUsage
+	fontOrder []string // font identities, in first-use order
 
 	imageNames map[string]string
 	imageRefs  map[string]pdfobj.Ref
@@ -75,8 +76,7 @@ type pageEntry struct {
 func NewBuilder(meta Metadata, compress bool) *Builder {
 	b := &Builder{
 		writer:       pdfobj.NewWriter(compress),
-		fontNames:    map[string]string{},
-		fontRefs:     map[string]pdfobj.Ref{},
+		fontsByID:    map[string]*fontUsage{},
 		imageNames:   map[string]string{},
 		imageRefs:    map[string]pdfobj.Ref{},
 		alphaNames:   map[[2]uint8]string{},
@@ -93,85 +93,6 @@ func NewBuilder(meta Metadata, compress bool) *Builder {
 // added to the document when the canvas is closed.
 func (b *Builder) NewPage(size core.Size) *PDFCanvas {
 	return newPDFCanvas(b, size)
-}
-
-// fontResource registers a font and returns its resource name, e.g. "F0".
-func (b *Builder) fontResource(f core.Font) (string, error) {
-	if f == nil {
-		return "", fmt.Errorf("sanur/render: text drawn with no font set")
-	}
-	id := f.Name()
-	if name, ok := b.fontNames[id]; ok {
-		return name, nil
-	}
-
-	program, ok := fonts.ProgramOf(f)
-	if !ok {
-		return "", fmt.Errorf(
-			"sanur/render: font %q cannot describe itself to the PDF writer "+
-				"(it must implement fonts.Programmable)", id)
-	}
-
-	name := fmt.Sprintf("F%d", len(b.fontOrder))
-	ref, err := b.emitFont(program)
-	if err != nil {
-		return "", err
-	}
-
-	b.fontNames[id] = name
-	b.fontRefs[name] = ref
-	b.fontOrder = append(b.fontOrder, name)
-	return name, nil
-}
-
-// emitFont writes the font dictionary and, for embedded fonts, the descriptor
-// and font program.
-func (b *Builder) emitFont(p fonts.FontProgram) (pdfobj.Ref, error) {
-	dict := pdfobj.NewDict().
-		SetName("Type", "Font").
-		SetName("BaseFont", p.BaseName).
-		SetName("Encoding", "WinAnsiEncoding")
-
-	if p.Standard14 {
-		// A standard-14 font is resolved by the reader from its name alone. It
-		// takes no descriptor and no Widths array, and supplying one is what
-		// causes readers to demand a full descriptor as well.
-		dict.SetName("Subtype", "Type1")
-		return b.writer.AddDict(dict), nil
-	}
-
-	if len(p.Data) == 0 {
-		return 0, fmt.Errorf("sanur/render: font %q is not standard-14 but carries no data", p.BaseName)
-	}
-
-	fileDict := pdfobj.NewDict().SetInt("Length1", len(p.Data))
-	fileRef := b.writer.AddStream(fileDict, p.Data)
-
-	descriptor := pdfobj.NewDict().
-		SetName("Type", "FontDescriptor").
-		SetName("FontName", p.BaseName).
-		SetInt("Flags", p.Flags).
-		Set("FontBBox", pdfobj.IntArray(p.BBox[:])).
-		SetInt("ItalicAngle", p.ItalicAngle).
-		SetInt("Ascent", p.Ascent).
-		SetInt("Descent", p.Descent).
-		SetInt("CapHeight", p.CapHeight).
-		SetInt("StemV", p.StemV).
-		SetRef("FontFile2", fileRef)
-	descriptorRef := b.writer.AddDict(descriptor)
-
-	widths := make([]int, 0, p.LastChar-p.FirstChar+1)
-	for c := p.FirstChar; c <= p.LastChar; c++ {
-		widths = append(widths, p.Widths[c])
-	}
-
-	dict.SetName("Subtype", "TrueType").
-		SetInt("FirstChar", p.FirstChar).
-		SetInt("LastChar", p.LastChar).
-		Set("Widths", pdfobj.IntArray(widths)).
-		SetRef("FontDescriptor", descriptorRef)
-
-	return b.writer.AddDict(dict), nil
 }
 
 // alphaResource registers a graphics state for a fill and stroke opacity pair.
@@ -205,6 +126,12 @@ func (b *Builder) Bytes() ([]byte, error) {
 	}
 
 	if err := b.checkDestinations(); err != nil {
+		return nil, err
+	}
+
+	// Fonts first: the resource dictionary refers to them, and a font that cannot
+	// be subsetted has to fail before anything else is written.
+	if err := b.emitFonts(); err != nil {
 		return nil, err
 	}
 
@@ -276,8 +203,9 @@ func (b *Builder) emitResources() pdfobj.Ref {
 
 	if len(b.fontOrder) > 0 {
 		fontDict := pdfobj.NewDict()
-		for _, name := range b.fontOrder {
-			fontDict.SetRef(name, b.fontRefs[name])
+		for _, id := range b.fontOrder {
+			usage := b.fontsByID[id]
+			fontDict.SetRef(usage.name, usage.ref)
 		}
 		resources.SetRef("Font", b.writer.AddDict(fontDict))
 	}

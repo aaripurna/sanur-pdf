@@ -2,25 +2,38 @@ package fonts
 
 import "github.com/aaripurna/sanur-pdf/core"
 
-// FontProgram is everything the PDF writer needs to emit a font resource.
+// FontProgram is everything the PDF writer needs to emit a font resource, apart
+// from the program bytes of an embedded font.
 //
-// It exists so the writer never has to know whether a face came from the
-// built-in metric tables or a parsed .ttf: both produce a FontProgram, and the
-// writer branches only on Standard14 to decide whether to embed the bytes.
+// It exists so the writer never has to know whether a face came from the built-in
+// metric tables or a parsed .ttf. The two kinds are genuinely different objects in
+// a PDF — a bare Type1 dictionary resolved by name against a bare Type0 font with a
+// descendant CID font, a descriptor and an embedded program — and the two flags
+// below are how the writer tells them apart.
 type FontProgram struct {
-	// BaseName is the PDF /BaseFont value.
+	// BaseName is the PDF /BaseFont value, before any subset tag is applied.
 	BaseName string
 
-	// Standard14 marks a reader-provided font, which is emitted as a bare
-	// Type1 dictionary with no descriptor and no embedded program.
+	// Standard14 marks a reader-provided font, emitted as a bare Type1 dictionary
+	// with no descriptor and no embedded program.
 	Standard14 bool
 
-	// Data is the raw TrueType file, embedded as /FontFile2. Nil for
-	// standard-14 fonts.
-	Data []byte
+	// Composite marks a font emitted as a Type0 font with Identity-H encoding: two
+	// bytes per glyph, addressing the font's glyphs directly instead of through a
+	// 256-entry encoding table. This is what lets a document contain any script the
+	// registered font covers.
+	//
+	// The program bytes are not carried here, because they depend on which glyphs
+	// the document used. The writer obtains them from GlyphSource.Subset once every
+	// page has been drawn.
+	Composite bool
+
+	// DefaultWidth is the advance assumed for a glyph absent from the width array,
+	// emitted as /DW.
+	DefaultWidth int
 
 	// Widths holds advance widths in 1/1000 em indexed by WinAnsi code, for
-	// codes FirstChar..LastChar inclusive.
+	// codes FirstChar..LastChar inclusive. Simple fonts only.
 	Widths    [256]int
 	FirstChar int
 	LastChar  int

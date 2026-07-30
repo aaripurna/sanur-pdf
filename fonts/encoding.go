@@ -1,14 +1,17 @@
 package fonts
 
-// WinAnsiEncoding is the single-byte encoding sanur emits.
+// WinAnsiEncoding is the single-byte encoding the built-in fonts use.
 //
-// PDF's simple fonts address glyphs by byte, so text has to be transcoded from
-// Go's UTF-8 on the way out. WinAnsi is the pragmatic choice: it is a superset
-// of Latin-1 with the typographic punctuation real documents use (curly quotes,
-// en/em dashes, the euro sign), and every standard-14 font ships metrics for it.
+// PDF's simple fonts address glyphs by byte, so text drawn in one has to be
+// transcoded from Go's UTF-8 on the way out. WinAnsi is the only sensible choice for
+// the standard-14 faces: it is a superset of Latin-1 with the typographic punctuation
+// real documents use, and every one of those faces ships metrics for it.
 //
-// Scripts outside this repertoire need a registered TrueType font, which sanur
-// emits as a composite font with its own encoding.
+// It is also the ceiling on what a built-in font can say. WinAnsi is Windows code
+// page 1252, so it stops at Western Europe — no Polish, Czech, Turkish, Romanian or
+// Vietnamese, let alone Greek or Cyrillic. Anything beyond it needs a registered
+// TrueType or OpenType font, which sanur embeds as a composite font addressed by
+// glyph identifier; see composite.go.
 var winAnsiToRune [256]rune
 
 // runeToWinAnsi is the reverse lookup, built from winAnsiToRune so the two can
@@ -95,7 +98,13 @@ func WinAnsiCode(r rune) (byte, bool) {
 }
 
 // RuneForWinAnsiCode returns the rune a WinAnsi byte maps to, or 0 if the code
-// is unassigned. The PDF writer uses this to emit a Widths array in code order.
+// is unassigned.
+//
+// It is the inverse of WinAnsiCode, and exists so that the two directions of the
+// table are derived from one source and cannot drift apart. Nothing in sanur reads it
+// any more — the widths of the built-in faces are indexed by code directly — but it
+// is the only way for a caller to find out what a byte in a simple font's string
+// means.
 func RuneForWinAnsiCode(code byte) rune {
 	return winAnsiToRune[code]
 }

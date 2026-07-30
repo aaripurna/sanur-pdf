@@ -140,8 +140,12 @@ func TestStandard14ProgramNeedsNoEmbeddedData(t *testing.T) {
 	if !program.Standard14 {
 		t.Error("built-in font is not marked standard-14")
 	}
-	if len(program.Data) != 0 {
-		t.Error("built-in font should carry no embedded font program")
+	if program.Composite {
+		t.Error("a built-in font has no program to index by glyph, so it cannot be composite")
+	}
+	// Widths are indexed by WinAnsi code, so 'A' must land at 0x41.
+	if program.Widths['A'] <= 0 {
+		t.Error("no width recorded for 'A'")
 	}
 }
 
@@ -213,16 +217,39 @@ func TestTrueTypeProgramCarriesEmbeddableData(t *testing.T) {
 	if program.Standard14 {
 		t.Error("a loaded font must not be marked standard-14")
 	}
-	if len(program.Data) == 0 {
-		t.Error("no font program to embed")
+	// Every embedded font is composite, so that a document is never limited to the
+	// 256 characters a single-byte encoding can address.
+	if !program.Composite {
+		t.Error("a loaded font must be marked composite")
 	}
 	if program.Ascent <= 0 || program.Descent >= 0 {
 		t.Errorf("descriptor ascent/descent = %d/%d, want positive/negative",
 			program.Ascent, program.Descent)
 	}
-	// Widths are indexed by WinAnsi code, so 'A' must land at 0x41.
-	if program.Widths['A'] <= 0 {
-		t.Error("no width recorded for 'A'")
+	if program.DefaultWidth <= 0 {
+		t.Errorf("default width = %d, want positive", program.DefaultWidth)
+	}
+
+	// The program itself comes from Subset, not from the descriptor, because it
+	// depends on which glyphs the document used.
+	source, ok := fonts.GlyphSourceOf(f)
+	if !ok {
+		t.Fatal("a composite font must expose its glyphs")
+	}
+	gid, ok := source.GlyphID('A')
+	if !ok {
+		t.Fatal("the font has no glyph for 'A'")
+	}
+	if source.GlyphWidth(gid) <= 0 {
+		t.Errorf("width of glyph %d = %d, want positive", gid, source.GlyphWidth(gid))
+	}
+
+	subset, err := source.Subset(map[uint16]bool{gid: true})
+	if err != nil {
+		t.Fatalf("subsetting: %v", err)
+	}
+	if len(subset.Data) == 0 {
+		t.Error("no font program to embed")
 	}
 }
 

@@ -318,10 +318,10 @@ func panel(title string, body core.Element) core.Element {
 // tallest, so their backgrounds line up even though their labels wrap to
 // different numbers of lines.
 func statTile(m metric) core.Element {
-	// The sign is spelled with ASCII rather than a triangle glyph. Text is encoded
-	// as WinAnsi, which has no geometric shapes: a triangle would be substituted
-	// with a question mark. Marks like these need a registered TrueType font that
-	// carries them.
+	// The sign is spelled with ASCII rather than a triangle glyph. This document uses
+	// the built-in faces, which are addressed through WinAnsi and have no geometric
+	// shapes, so a triangle would be substituted with a question mark. Marks like
+	// these need a registered TrueType font — see examples/scripts.
 	deltaColor := positive
 	sign := "+"
 	if m.Change < 0 {

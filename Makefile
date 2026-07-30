@@ -34,7 +34,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report charts themed print
+examples: invoice images report charts themed print scripts
 
 .PHONY: invoice
 invoice:
@@ -61,6 +61,12 @@ print:
 themed:
 	go run ./examples/themed themed-light.pdf examples/themed/themes/light.json
 	go run ./examples/themed themed-dark.pdf examples/themed/themes/dark.json
+
+# Needs a system font with Cyrillic coverage; pass one as a second argument if the
+# usual locations come up empty.
+.PHONY: scripts
+scripts:
+	go run ./examples/scripts scripts.pdf
 
 .PHONY: clean
 clean:

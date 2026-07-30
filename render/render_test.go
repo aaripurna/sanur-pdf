@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -1379,4 +1380,166 @@ func TestMalformedJPEGIsReported(t *testing.T) {
 	if !strings.Contains(canvas.Err().Error(), "broken") {
 		t.Errorf("error %q does not name the image", canvas.Err())
 	}
+}
+
+// --- font emission failures -------------------------------------------------
+
+// stubFace is a core.Font with predictable metrics, used as the base for the
+// deliberately broken fonts below.
+type stubFace struct{ name string }
+
+func (f stubFace) Name() string                    { return f.name }
+func (f stubFace) AdvanceOf(rune, float64) float64 { return 1 }
+func (f stubFace) Measure(string, float64) float64 { return 1 }
+func (f stubFace) Ascent(float64) float64          { return 8 }
+func (f stubFace) Descent(float64) float64         { return 2 }
+func (f stubFace) LineHeight(float64) float64      { return 12 }
+
+// neitherKind describes itself as a font the writer has no way to emit: not a
+// standard-14 name the reader can resolve, and not a composite font with a program
+// to embed. Nothing sanur ships does this, but a caller's own core.Font can.
+type neitherKind struct{ stubFace }
+
+func (neitherKind) Program() fonts.FontProgram {
+	return fonts.FontProgram{BaseName: "Neither"}
+}
+
+// compositeWithoutGlyphs claims to be composite but cannot map a rune to a glyph,
+// which would otherwise crash on the first character drawn.
+type compositeWithoutGlyphs struct{ stubFace }
+
+func (compositeWithoutGlyphs) Program() fonts.FontProgram {
+	return fonts.FontProgram{BaseName: "Incomplete", Composite: true}
+}
+
+// brokenSubset is composite and maps glyphs, but cannot produce a program.
+type brokenSubset struct {
+	stubFace
+	empty bool
+}
+
+func (brokenSubset) Program() fonts.FontProgram {
+	return fonts.FontProgram{BaseName: "Broken", Composite: true}
+}
+
+func (brokenSubset) GlyphID(r rune) (uint16, bool) { return uint16(r), true }
+func (brokenSubset) SubstituteGlyph() uint16       { return 0 }
+func (brokenSubset) GlyphWidth(uint16) int         { return 500 }
+
+func (f brokenSubset) Subset(map[uint16]bool) (fonts.Subset, error) {
+	if f.empty {
+		return fonts.Subset{}, nil
+	}
+	return fonts.Subset{}, errors.New("no outlines available")
+}
+
+// drawWith renders one string with a font and returns whatever went wrong.
+//
+// The failure has to surface as an error from generation rather than as a panic or a
+// file with a broken font dictionary in it, which is the only reason these types
+// exist: every one of them is a mistake a caller can make in its own core.Font.
+func drawWith(t *testing.T, face core.Font) error {
+	t.Helper()
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	canvas.DrawText("text", core.Position{X: 10, Y: 20}, core.TextStyle{
+		Font: face, Size: 11, Color: core.RGB(0, 0, 0),
+	})
+
+	if err := canvas.Close(); err != nil {
+		return err
+	}
+
+	_, err := b.Bytes()
+	return err
+}
+
+func TestFontThatIsNeitherStandard14NorCompositeIsRejected(t *testing.T) {
+	err := drawWith(t, neitherKind{stubFace{"Neither"}})
+	if err == nil {
+		t.Fatal("a font with no way to be embedded was accepted")
+	}
+	for _, want := range []string{"Neither", "composite"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestCompositeFontWithoutAGlyphSourceIsRejected(t *testing.T) {
+	// Caught at registration rather than at the first draw call, so the message names
+	// the interface to implement instead of arriving as a nil dereference.
+	err := drawWith(t, compositeWithoutGlyphs{stubFace{"Incomplete"}})
+	if err == nil {
+		t.Fatal("a composite font with no glyph source was accepted")
+	}
+	for _, want := range []string{"Incomplete", "GlyphSource"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestSubsettingFailureIsReported(t *testing.T) {
+	err := drawWith(t, brokenSubset{stubFace: stubFace{"Broken"}})
+	if err == nil {
+		t.Fatal("a font that cannot produce a program was accepted")
+	}
+	if !strings.Contains(err.Error(), "no outlines available") {
+		t.Errorf("error %q does not carry the subsetter's own message", err)
+	}
+}
+
+func TestEmptyFontProgramIsReported(t *testing.T) {
+	// An empty stream would produce a font dictionary pointing at nothing, which a
+	// reader reports as a damaged file rather than as a missing font.
+	err := drawWith(t, brokenSubset{stubFace: stubFace{"Empty"}, empty: true})
+	if err == nil {
+		t.Fatal("an empty font program was accepted")
+	}
+	if !strings.Contains(err.Error(), "empty program") {
+		t.Errorf("error %q does not say the program was empty", err)
+	}
+}
+
+func TestCompositeFontWithoutADeclaredWidthFallsBackToThePDFDefault(t *testing.T) {
+	// /DW is what a reader uses for any glyph absent from /W. A zero would collapse
+	// those glyphs to no width at all, so the PDF default stands in.
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	canvas.DrawText("A", core.Position{X: 10, Y: 20}, core.TextStyle{
+		Font:  brokenSubsetThatWorks{stubFace{"NoDefault"}},
+		Size:  11,
+		Color: core.RGB(0, 0, 0),
+	})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("/DW 1000")) {
+		t.Errorf("no default width emitted:\n%s", data)
+	}
+}
+
+// brokenSubsetThatWorks is composite, maps glyphs and produces a program, but
+// declares no default width.
+type brokenSubsetThatWorks struct{ stubFace }
+
+func (brokenSubsetThatWorks) Program() fonts.FontProgram {
+	return fonts.FontProgram{BaseName: "NoDefault", Composite: true}
+}
+
+func (brokenSubsetThatWorks) GlyphID(r rune) (uint16, bool) { return uint16(r), true }
+func (brokenSubsetThatWorks) SubstituteGlyph() uint16       { return 0 }
+func (brokenSubsetThatWorks) GlyphWidth(uint16) int         { return 500 }
+
+func (brokenSubsetThatWorks) Subset(map[uint16]bool) (fonts.Subset, error) {
+	return fonts.Subset{Data: []byte("not really a font, but not empty")}, nil
 }

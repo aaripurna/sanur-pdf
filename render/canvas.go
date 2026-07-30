@@ -6,7 +6,6 @@ import (
 	"math"
 
 	"github.com/aaripurna/sanur-pdf/core"
-	"github.com/aaripurna/sanur-pdf/fonts"
 	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
@@ -340,16 +339,21 @@ func (c *PDFCanvas) DrawText(text string, pos core.Position, style core.TextStyl
 		return
 	}
 
-	resource, err := c.builder.fontResource(style.Font)
+	usage, err := c.builder.fontResource(style.Font)
 	if err != nil {
 		c.Fail(err)
 		return
 	}
 
+	// The operand is built before the operators are emitted, because encoding is
+	// what registers the glyphs this font needs — and the font dictionary that
+	// declares them is written only once every page has been drawn.
+	operand := c.builder.encodeText(usage, text)
+
 	c.withAlpha(style.Color, func() {
 		c.setFillColor(style.Color)
 		c.op("BT")
-		c.op("%s %s Tf", pdfobj.Name(resource), pdfobj.Num(style.Size))
+		c.op("%s %s Tf", pdfobj.Name(usage.name), pdfobj.Num(style.Size))
 
 		if style.LetterSpacing != 0 {
 			c.op("%s Tc", pdfobj.Num(style.LetterSpacing))
@@ -362,7 +366,7 @@ func (c *PDFCanvas) DrawText(text string, pos core.Position, style core.TextStyl
 		// flipping CTM it places the baseline origin at pos while leaving glyphs
 		// the right way up.
 		c.op("1 0 0 -1 %s %s Tm", pdfobj.Num(pos.X), pdfobj.Num(pos.Y))
-		c.op("%s Tj", pdfobj.StringBytes(fonts.EncodeWinAnsi(text)))
+		c.op("%s Tj", operand)
 		c.op("ET")
 
 		c.drawTextDecorations(text, pos, style)
