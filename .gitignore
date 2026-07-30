@@ -1,0 +1,10 @@
+# Generated example output
+*.pdf
+
+# Go build artifacts
+*.test
+*.out
+
+# Coverage output
+coverage.out
+coverage.html

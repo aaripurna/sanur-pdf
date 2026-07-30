@@ -1,0 +1,826 @@
+package render_test
+
+import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
+	"regexp"
+	"strings"
+	"testing"
+
+	"codeberg.org/aaripurna/sanur/core"
+	"codeberg.org/aaripurna/sanur/fonts"
+	"codeberg.org/aaripurna/sanur/render"
+)
+
+var a4 = core.Size{Width: 595.28, Height: 841.89}
+
+func helvetica() core.Font { return fonts.MustStandard(fonts.Helvetica) }
+
+// drawOn runs draw on a single-page canvas and returns that page's content
+// stream as text.
+//
+// Compression is disabled so the operators can be read back directly; asserting
+// on the real emitted stream is the only way to catch a coordinate or operator
+// mistake that still produces a structurally valid file.
+func drawOn(t *testing.T, draw func(c *render.PDFCanvas)) string {
+	t.Helper()
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	draw(canvas)
+
+	if err := canvas.Close(); err != nil {
+		t.Fatalf("closing page: %v", err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatalf("serialising document: %v", err)
+	}
+	return contentStream(t, data)
+}
+
+var streamPattern = regexp.MustCompile(`(?s)stream\n(.*?)\nendstream`)
+
+// contentStream returns the first stream that looks like page content rather
+// than an embedded resource.
+func contentStream(t *testing.T, data []byte) string {
+	t.Helper()
+
+	for _, m := range streamPattern.FindAllSubmatch(data, -1) {
+		body := string(m[1])
+		// Resource streams (fonts, images) are binary; a content stream is
+		// operators, and every page begins with the axis-flipping transform.
+		if strings.Contains(body, "cm") || strings.Contains(body, "re") {
+			return body
+		}
+	}
+	t.Fatalf("no content stream found in:\n%s", data)
+	return ""
+}
+
+func requireContains(t *testing.T, got string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Errorf("content stream is missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// --- coordinate system -----------------------------------------------------
+
+func TestPageStartsWithAxisFlip(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {})
+
+	// Layout works top-left origin with Y down; PDF user space is bottom-left
+	// with Y up. One flip at the top of the page lets every element emit its own
+	// coordinates verbatim.
+	if !strings.HasPrefix(strings.TrimSpace(stream), "1 0 0 -1 0 841.89 cm") {
+		t.Errorf("page does not begin with the Y-axis flip; got:\n%s", stream)
+	}
+}
+
+func TestTranslateEmitsMatrixAndSkipsNoOps(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.Translate(core.Position{X: 10, Y: 20})
+		c.Translate(core.Position{}) // no-op, must emit nothing
+	})
+
+	requireContains(t, stream, "1 0 0 1 10 20 cm")
+
+	if got := strings.Count(stream, "1 0 0 1"); got != 1 {
+		t.Errorf("emitted %d translation matrices, want 1 (the zero translate should be skipped)", got)
+	}
+}
+
+func TestRotateEmitsRotationAndSkipsFullTurns(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.Rotate(90)
+		c.Rotate(360) // a full turn is a no-op
+		c.Rotate(0)
+	})
+
+	// cos 90 is 0 and sin 90 is 1, so a quarter turn is "0 1 -1 0 0 0 cm".
+	requireContains(t, stream, "0 1 -1 0 0 0 cm")
+
+	if got := strings.Count(stream, "cm"); got != 2 {
+		t.Errorf("emitted %d transforms, want 2 (the page flip and one rotation)", got)
+	}
+}
+
+func TestSaveRestoreEmitBalancedOperators(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.Save()
+		c.Translate(core.Position{X: 5})
+		c.Restore()
+	})
+
+	if strings.Count(stream, "q") != 1 || strings.Count(stream, "Q") != 1 {
+		t.Errorf("unbalanced graphics state operators in:\n%s", stream)
+	}
+}
+
+// --- shapes ----------------------------------------------------------------
+
+func TestDrawRectEmitsFillInLayoutCoordinates(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{X: 10, Y: 20}, core.Size{Width: 100, Height: 50}, core.RGB(255, 0, 0))
+	})
+
+	// The rectangle is emitted exactly as laid out; the page-level flip handles
+	// the conversion into PDF space.
+	requireContains(t, stream, "1 0 0 rg", "10 20 100 50 re f")
+}
+
+func TestDrawRectSkipsInvisibleAndDegenerateShapes(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10}, core.Transparent)
+		c.DrawRect(core.Position{}, core.Size{Width: 0, Height: 10}, core.RGB(0, 0, 0))
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: -5}, core.RGB(0, 0, 0))
+	})
+
+	if strings.Contains(stream, "re f") {
+		t.Errorf("an invisible or degenerate rectangle produced a fill:\n%s", stream)
+	}
+}
+
+func TestDrawRoundedRectEmitsCurves(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRoundedRect(core.Position{}, core.Size{Width: 100, Height: 60}, 8, core.RGB(0, 0, 255))
+	})
+
+	// PDF has no arc operator, so each of the four corners is a cubic Bézier.
+	if got := strings.Count(stream, " c\n"); got != 4 {
+		t.Errorf("emitted %d curves, want 4 (one per corner); got:\n%s", got, stream)
+	}
+	requireContains(t, stream, "h f")
+}
+
+func TestRoundedRectWithZeroRadiusFallsBackToPlainFill(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRoundedRect(core.Position{}, core.Size{Width: 50, Height: 50}, 0, core.RGB(0, 0, 0))
+	})
+
+	requireContains(t, stream, "re f")
+	if strings.Contains(stream, " c\n") {
+		t.Error("a zero radius should not produce curves")
+	}
+}
+
+func TestRoundedRectClampsOversizedRadius(t *testing.T) {
+	// A radius beyond half the shorter side would make opposite corners overlap
+	// and self-intersect. It must be clamped, not rejected.
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRoundedRect(core.Position{}, core.Size{Width: 40, Height: 40}, 500, core.RGB(0, 0, 0))
+	})
+
+	if got := strings.Count(stream, " c\n"); got != 4 {
+		t.Errorf("emitted %d curves, want 4; got:\n%s", got, stream)
+	}
+	// Clamped to 20, the outline is a circle: no straight run should exceed it.
+	requireContains(t, stream, "20 0 m")
+}
+
+func TestDrawLineEmitsStroke(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawLine(core.Position{X: 0, Y: 5}, core.Position{X: 100, Y: 5}, core.RGB(0, 255, 0), 2)
+	})
+
+	requireContains(t, stream, "0 1 0 RG", "2 w", "0 5 m 100 5 l S")
+}
+
+func TestDrawLineSkipsInvisibleStrokes(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawLine(core.Position{}, core.Position{X: 10}, core.Transparent, 1)
+		c.DrawLine(core.Position{}, core.Position{X: 10}, core.RGB(0, 0, 0), 0)
+	})
+
+	if strings.Contains(stream, " S") {
+		t.Errorf("an invisible or zero-width line produced a stroke:\n%s", stream)
+	}
+}
+
+func TestClipRectEmitsClipPath(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.ClipRect(core.Position{X: 5, Y: 5}, core.Size{Width: 50, Height: 50})
+	})
+
+	requireContains(t, stream, "5 5 50 50 re W n")
+}
+
+func TestEmptyClipStillRestrictsDrawing(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.ClipRect(core.Position{}, core.Size{})
+	})
+
+	// Skipping an empty clip would let content that should be fully hidden draw
+	// at full size, which is the opposite of what was asked.
+	requireContains(t, stream, "0 0 0 0 re W n")
+}
+
+// --- text ------------------------------------------------------------------
+
+func TestDrawTextCounterFlipsTheTextMatrix(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawText("Hi", core.Position{X: 12, Y: 34}, core.TextStyle{
+			Font:  helvetica(),
+			Size:  11,
+			Color: core.RGB(0, 0, 0),
+		})
+	})
+
+	// Composed with the page flip, a text matrix of "1 0 0 -1 x y" lands the
+	// baseline at (x, y) with the glyphs upright rather than mirrored.
+	requireContains(t, stream, "BT", "/F0 11 Tf", "1 0 0 -1 12 34 Tm", "(Hi) Tj", "ET")
+}
+
+func TestDrawTextEmitsSpacingOperators(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawText("a b", core.Position{}, core.TextStyle{
+			Font:          helvetica(),
+			Size:          10,
+			Color:         core.RGB(0, 0, 0),
+			LetterSpacing: 1.5,
+			WordSpacing:   3,
+		})
+	})
+
+	// Justification relies on Tw, so it must reach the stream.
+	requireContains(t, stream, "1.5 Tc", "3 Tw")
+}
+
+func TestDrawTextSkipsNothingToDraw(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		style := core.TextStyle{Font: helvetica(), Size: 11, Color: core.RGB(0, 0, 0)}
+
+		c.DrawText("", core.Position{}, style)
+
+		invisible := style
+		invisible.Color = core.Transparent
+		c.DrawText("hidden", core.Position{}, invisible)
+
+		zero := style
+		zero.Size = 0
+		c.DrawText("tiny", core.Position{}, zero)
+	})
+
+	if strings.Contains(stream, "BT") {
+		t.Errorf("text with nothing to draw still opened a text object:\n%s", stream)
+	}
+}
+
+func TestDrawTextWithoutFontFails(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	canvas.DrawText("no font", core.Position{}, core.TextStyle{Size: 11, Color: core.RGB(0, 0, 0)})
+
+	if canvas.Err() == nil {
+		t.Fatal("expected an error when drawing text with no font set")
+	}
+	// Draw has no error return, so failures surface through the canvas and are
+	// reported once the page closes.
+	if err := canvas.Close(); err == nil {
+		t.Error("Close should surface the recorded failure")
+	}
+}
+
+func TestTextDecorationsAreStroked(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawText("underlined", core.Position{X: 0, Y: 50}, core.TextStyle{
+			Font:      helvetica(),
+			Size:      12,
+			Color:     core.RGB(0, 0, 0),
+			Underline: true,
+			Strikeout: true,
+		})
+	})
+
+	// PDF has no decoration property, so each rule is a stroked line.
+	if got := strings.Count(stream, " l S"); got != 2 {
+		t.Errorf("got %d decoration strokes, want 2 (underline and strikeout); stream:\n%s", got, stream)
+	}
+}
+
+// --- resources -------------------------------------------------------------
+
+func TestFontsAreDeduplicatedAcrossPages(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	style := core.TextStyle{Font: helvetica(), Size: 11, Color: core.RGB(0, 0, 0)}
+
+	for i := 0; i < 3; i++ {
+		canvas := b.NewPage(a4)
+		canvas.DrawText("repeated", core.Position{X: 0, Y: 20}, style)
+		if err := canvas.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := bytes.Count(data, []byte("/BaseFont /Helvetica")); got != 1 {
+		t.Errorf("font emitted %d times across 3 pages, want 1", got)
+	}
+	if got := bytes.Count(data, []byte("/Type /Page\n")) + bytes.Count(data, []byte("/Type /Page ")); got != 3 {
+		t.Errorf("page count = %d, want 3", got)
+	}
+}
+
+func TestDistinctFontsGetDistinctResourceNames(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		regular := core.TextStyle{Font: helvetica(), Size: 10, Color: core.RGB(0, 0, 0)}
+		bold := regular
+		bold.Font = fonts.MustStandard(fonts.HelveticaBold)
+
+		c.DrawText("regular", core.Position{Y: 10}, regular)
+		c.DrawText("bold", core.Position{Y: 30}, bold)
+	})
+
+	requireContains(t, stream, "/F0 10 Tf", "/F1 10 Tf")
+}
+
+func TestStandard14FontsCarryNoDescriptor(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawText("built in", core.Position{Y: 20}, core.TextStyle{
+		Font: helvetica(), Size: 11, Color: core.RGB(0, 0, 0),
+	})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A reader resolves a standard-14 font from its name alone. Supplying a
+	// Widths array is what makes readers demand a full descriptor too.
+	requireContains(t, string(data), "/Subtype /Type1", "/Encoding /WinAnsiEncoding")
+	if bytes.Contains(data, []byte("/FontDescriptor")) {
+		t.Error("a built-in font should not emit a font descriptor")
+	}
+	if bytes.Contains(data, []byte("/FontFile2")) {
+		t.Error("a built-in font should not embed a font program")
+	}
+}
+
+func TestTranslucentFillsSelectAGraphicsState(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10}, core.RGBA(255, 0, 0, 128))
+	})
+
+	// Colour operators carry no alpha, so transparency arrives via ExtGState,
+	// wrapped in q/Q so it cannot leak into later drawing.
+	requireContains(t, stream, "/GS0 gs", "q", "Q")
+}
+
+func TestOpaqueFillsSkipTheGraphicsState(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10}, core.RGB(255, 0, 0))
+	})
+
+	if strings.Contains(stream, "gs") {
+		t.Errorf("an opaque fill should need no graphics state:\n%s", stream)
+	}
+}
+
+func TestAlphaStatesArePooledAndOrdered(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	// Two distinct alphas used twice each should yield exactly two states.
+	for _, a := range []uint8{128, 64, 128, 64} {
+		canvas.DrawRect(core.Position{}, core.Size{Width: 5, Height: 5}, core.RGBA(0, 0, 0, a))
+	}
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := bytes.Count(data, []byte("/Type /ExtGState")); got != 2 {
+		t.Errorf("emitted %d graphics states, want 2", got)
+	}
+}
+
+// --- images ----------------------------------------------------------------
+
+func encodePNG(t *testing.T, w, h int, alpha uint8) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 200, G: 100, B: 50, A: alpha})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func encodeJPEG(t *testing.T, w, h int) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 90, A: 255})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestDecodeImageReadsDimensionsAndFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		data   []byte
+		format string
+	}{
+		{"png", encodePNG(t, 40, 25, 255), "png"},
+		{"jpeg", encodeJPEG(t, 32, 16), "jpeg"},
+	} {
+		img, err := render.DecodeImage(tc.name, tc.data)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if img.Format != tc.format {
+			t.Errorf("%s: format = %q, want %q", tc.name, img.Format, tc.format)
+		}
+		if img.PixelWidth == 0 || img.PixelHeight == 0 {
+			t.Errorf("%s: dimensions not read (%dx%d)", tc.name, img.PixelWidth, img.PixelHeight)
+		}
+		// The encoded bytes must be kept as supplied so a JPEG can be embedded
+		// without requantisation.
+		if !bytes.Equal(img.Data, tc.data) {
+			t.Errorf("%s: image data was altered during decode", tc.name)
+		}
+	}
+}
+
+func TestDecodeImageRejectsBadInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"empty", nil},
+		{"garbage", []byte("definitely not an image")},
+	} {
+		if _, err := render.DecodeImage(tc.name, tc.data); err == nil {
+			t.Errorf("%s: expected an error", tc.name)
+		}
+	}
+}
+
+func TestJPEGIsEmbeddedVerbatim(t *testing.T) {
+	raw := encodeJPEG(t, 32, 16)
+	img, err := render.DecodeImage("photo", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{X: 10, Y: 10}, core.Size{Width: 64, Height: 32})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// DCTDecode is PDF's built-in JPEG codec, so the original file passes
+	// straight through.
+	requireContains(t, string(data), "/Filter /DCTDecode", "/Subtype /Image")
+	if !bytes.Contains(data, raw) {
+		t.Error("the original JPEG bytes are not present in the output")
+	}
+}
+
+func TestOpaquePNGNeedsNoSoftMask(t *testing.T) {
+	img, err := render.DecodeImage("opaque", encodePNG(t, 20, 20, 255))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{}, core.Size{Width: 20, Height: 20})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Contains(data, []byte("/SMask")) {
+		t.Error("a fully opaque image should not carry a soft mask")
+	}
+}
+
+func TestTranslucentPNGGetsSoftMask(t *testing.T) {
+	img, err := render.DecodeImage("translucent", encodePNG(t, 20, 20, 90))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.DrawImage(img, core.Position{}, core.Size{Width: 20, Height: 20})
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A PDF image's colour samples have no alpha channel, so transparency has to
+	// travel as a separate greyscale mask.
+	requireContains(t, string(data), "/SMask", "/ColorSpace /DeviceGray")
+}
+
+func TestDrawImagePositionsViaTransform(t *testing.T) {
+	img, err := render.DecodeImage("placed", encodePNG(t, 10, 10, 255))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawImage(img, core.Position{X: 10, Y: 20}, core.Size{Width: 100, Height: 50})
+	})
+
+	// An image XObject draws into the unit square, so placement and scale are
+	// entirely the transform's job. The negative Y scale and the offset by the
+	// full height account for the image's bottom-up origin.
+	requireContains(t, stream, "100 0 0 -50 10 70 cm", "/Im0 Do")
+}
+
+func TestDrawImageSkipsEmptyGeometry(t *testing.T) {
+	img, err := render.DecodeImage("skipped", encodePNG(t, 10, 10, 255))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawImage(img, core.Position{}, core.Size{Width: 0, Height: 10})
+		c.DrawImage(core.Image{Key: "no data"}, core.Position{}, core.Size{Width: 10, Height: 10})
+		_ = img
+	})
+
+	if strings.Contains(stream, "Do") {
+		t.Errorf("an image with no data or no size was still drawn:\n%s", stream)
+	}
+}
+
+func TestEncodeJPEGProducesEmbeddableImage(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 24, 12))
+	for y := 0; y < 12; y++ {
+		for x := 0; x < 24; x++ {
+			src.Set(x, y, color.RGBA{R: 30, G: 60, B: 90, A: 255})
+		}
+	}
+
+	img, err := render.EncodeJPEG("encoded", src, 80)
+	if err != nil {
+		t.Fatalf("EncodeJPEG: %v", err)
+	}
+	if img.Format != "jpeg" {
+		t.Errorf("format = %q, want jpeg", img.Format)
+	}
+	if img.PixelWidth != 24 || img.PixelHeight != 12 {
+		t.Errorf("dimensions = %dx%d, want 24x12", img.PixelWidth, img.PixelHeight)
+	}
+}
+
+// --- builder and error handling --------------------------------------------
+
+func TestBuilderRejectsDocumentWithNoPages(t *testing.T) {
+	if _, err := render.NewBuilder(render.Metadata{}, true).Bytes(); err == nil {
+		t.Error("expected an error for a document with no pages")
+	}
+}
+
+func TestPageCountTracksAddedPages(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+
+	if b.PageCount() != 0 {
+		t.Errorf("PageCount = %d on a fresh builder, want 0", b.PageCount())
+	}
+	for i := 1; i <= 2; i++ {
+		canvas := b.NewPage(a4)
+		if err := canvas.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if b.PageCount() != i {
+			t.Errorf("PageCount = %d after %d pages", b.PageCount(), i)
+		}
+	}
+}
+
+func TestUnbalancedSaveIsReportedOnClose(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.Save() // never restored
+
+	err := canvas.Close()
+	if err == nil {
+		t.Fatal("expected an error for an unbalanced Save")
+	}
+	// A leaked graphics state would silently misplace everything drawn after it,
+	// so it has to be caught rather than tolerated.
+	if !strings.Contains(err.Error(), "unbalanced") {
+		t.Errorf("error %q does not explain the imbalance", err)
+	}
+}
+
+func TestRestoreWithoutSaveIsRecorded(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+	canvas.Restore()
+
+	if canvas.Err() == nil {
+		t.Error("expected Restore without Save to record a failure")
+	}
+}
+
+func TestCanvasKeepsTheFirstError(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	first := errorf("first")
+	canvas.Fail(first)
+	canvas.Fail(errorf("second"))
+	canvas.Fail(nil)
+
+	if canvas.Err() != first {
+		t.Errorf("Err = %v, want the first failure", canvas.Err())
+	}
+}
+
+func TestCloseIsIdempotent(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	canvas := b.NewPage(a4)
+
+	if err := canvas.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := canvas.Close(); err != nil {
+		t.Errorf("second Close returned %v, want nil", err)
+	}
+	if b.PageCount() != 1 {
+		t.Errorf("PageCount = %d, want 1: closing twice must not add the page twice", b.PageCount())
+	}
+}
+
+func TestCanvasSizeIsReported(t *testing.T) {
+	canvas := render.NewBuilder(render.Metadata{}, false).NewPage(a4)
+
+	if canvas.Size() != a4 {
+		t.Errorf("Size = %v, want %v", canvas.Size(), a4)
+	}
+}
+
+func TestMetadataReachesTheInfoDictionary(t *testing.T) {
+	meta := render.Metadata{
+		Title:        "The Title",
+		Author:       "The Author",
+		Subject:      "The Subject",
+		Keywords:     "a, b",
+		Creator:      "The Creator",
+		Producer:     "sanur",
+		CreationDate: "D:20260730120000Z",
+	}
+
+	b := render.NewBuilder(meta, false)
+	if err := b.NewPage(a4).Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requireContains(t, string(data),
+		"/Title (The Title)", "/Author (The Author)", "/Subject (The Subject)",
+		"/Keywords (a, b)", "/Creator (The Creator)", "/Producer (sanur)",
+		"/CreationDate (D:20260730120000Z)", "/Info")
+}
+
+func TestNoMetadataOmitsTheInfoDictionary(t *testing.T) {
+	b := render.NewBuilder(render.Metadata{}, false)
+	if err := b.NewPage(a4).Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := b.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Contains(data, []byte("/Info")) {
+		t.Error("an empty metadata set should emit no info dictionary")
+	}
+}
+
+func TestCompressionShrinksRepetitiveContent(t *testing.T) {
+	build := func(compress bool) []byte {
+		t.Helper()
+
+		b := render.NewBuilder(render.Metadata{}, compress)
+		canvas := b.NewPage(a4)
+		for i := 0; i < 400; i++ {
+			canvas.DrawRect(
+				core.Position{X: float64(i), Y: float64(i)},
+				core.Size{Width: 10, Height: 10},
+				core.RGB(1, 2, 3))
+		}
+		if err := canvas.Close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := b.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	compressed, plain := build(true), build(false)
+
+	if !bytes.Contains(compressed, []byte("/FlateDecode")) {
+		t.Error("a large content stream was not compressed")
+	}
+	if len(compressed) >= len(plain) {
+		t.Errorf("compressed output (%d bytes) is not smaller than plain (%d)",
+			len(compressed), len(plain))
+	}
+}
+
+// --- discard canvas --------------------------------------------------------
+
+func TestDiscardCanvasAcceptsEveryOperation(t *testing.T) {
+	c := render.NewDiscardCanvas()
+
+	// The counting pass drives a full draw through this canvas, so every method
+	// has to be safe to call and none may panic.
+	c.Save()
+	c.Translate(core.Position{X: 1, Y: 2})
+	c.Rotate(45)
+	c.ClipRect(core.Position{}, core.Size{Width: 10, Height: 10})
+	c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10}, core.RGB(0, 0, 0))
+	c.DrawRoundedRect(core.Position{}, core.Size{Width: 10, Height: 10}, 2, core.RGB(0, 0, 0))
+	c.DrawLine(core.Position{}, core.Position{X: 5}, core.RGB(0, 0, 0), 1)
+	c.DrawText("text", core.Position{}, core.TextStyle{Font: helvetica(), Size: 10})
+	c.DrawImage(core.Image{}, core.Position{}, core.Size{Width: 1, Height: 1})
+	c.Restore()
+
+	if c.Err() != nil {
+		t.Errorf("Err = %v, want nil", c.Err())
+	}
+}
+
+func TestDiscardCanvasStillCollectsFailures(t *testing.T) {
+	c := render.NewDiscardCanvas()
+
+	first := errorf("bad font")
+	c.Fail(first)
+	c.Fail(errorf("later problem"))
+
+	// Failures matter even on a discarded pass: an unembeddable font is worth
+	// reporting before the second pass repeats the same work.
+	if c.Err() != first {
+		t.Errorf("Err = %v, want the first failure", c.Err())
+	}
+}
+
+type stringError string
+
+func (e stringError) Error() string { return string(e) }
+
+func errorf(s string) error { return stringError(s) }
