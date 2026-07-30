@@ -292,6 +292,25 @@ func (c *Container) Row(build func(*RowBuilder)) {
 	build(&RowBuilder{row: row, style: c.style})
 }
 
+// Repeat draws a header at the top of every sheet its body occupies.
+//
+// A column that splits across pages resumes at the item it reached, so anything
+// meant to introduce the content — a table heading, a "continued" banner — appears
+// once and never again. This puts it back at the top of each continuation.
+func (c *Container) Repeat(build func(*RepeatBuilder)) {
+	r := &elements.Repeat{}
+	c.install(r)
+	build(&RepeatBuilder{repeat: r, style: c.style})
+}
+
+// Layers draws several elements into the same box, back to front, which is how a
+// watermark or an overlay is expressed.
+func (c *Container) Layers(build func(*LayersBuilder)) {
+	l := &elements.Layers{}
+	c.install(l)
+	build(&LayersBuilder{layers: l, style: c.style})
+}
+
 // Table lays out a grid with shared column widths.
 func (c *Container) Table(build func(*TableBuilder)) {
 	t := &TableBuilder{style: c.style}
@@ -482,4 +501,50 @@ func (b *TextBuilder) Italic(content string) *TextBuilder {
 // Line appends a run followed by a line break.
 func (b *TextBuilder) Line(content string) *TextBuilder {
 	return b.Span(content + "\n")
+}
+
+// RepeatBuilder collects the header and body of a repeating-header block.
+type RepeatBuilder struct {
+	repeat *elements.Repeat
+	style  core.TextStyle
+}
+
+// Header returns the slot drawn at the top of every sheet.
+//
+// It must fit whole on a sheet: a header that would itself paginate is reported as
+// not fitting, since a heading is only useful entire.
+func (b *RepeatBuilder) Header() *Container {
+	return newContainer(func(e core.Element) { b.repeat.Header = e }, b.style)
+}
+
+// Body returns the slot for the content that paginates.
+func (b *RepeatBuilder) Body() *Container {
+	return newContainer(func(e core.Element) { b.repeat.Body = e }, b.style)
+}
+
+// LayersBuilder collects the layers of a stack.
+type LayersBuilder struct {
+	layers *elements.Layers
+	style  core.TextStyle
+}
+
+// Below appends a layer painted behind the content.
+func (b *LayersBuilder) Below() *Container {
+	index := len(b.layers.Below)
+	b.layers.Below = append(b.layers.Below, nil)
+
+	return newContainer(func(e core.Element) { b.layers.Below[index] = e }, b.style)
+}
+
+// Content returns the slot that decides the size of the whole stack.
+func (b *LayersBuilder) Content() *Container {
+	return newContainer(func(e core.Element) { b.layers.Content = e }, b.style)
+}
+
+// Above appends a layer painted over the content.
+func (b *LayersBuilder) Above() *Container {
+	index := len(b.layers.Above)
+	b.layers.Above = append(b.layers.Above, nil)
+
+	return newContainer(func(e core.Element) { b.layers.Above[index] = e }, b.style)
 }

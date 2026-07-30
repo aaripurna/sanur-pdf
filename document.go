@@ -330,6 +330,12 @@ func (d *Document) drawSheet(
 		furnitureCanvas = core.WithoutAnchors(canvas)
 	}
 
+	// The watermark spans the whole sheet, margins included, and reserves no space:
+	// it sits behind the content rather than beside it.
+	canvas.Save()
+	page.watermark.Draw(furnitureCanvas, page.size)
+	canvas.Restore()
+
 	if furniture.headerHeight > 0 {
 		canvas.Save()
 		canvas.Translate(origin)
@@ -352,6 +358,11 @@ func (d *Document) drawSheet(
 		page.footer.Draw(furnitureCanvas, core.Size{Width: inner.Width, Height: furniture.footerHeight})
 		canvas.Restore()
 	}
+
+	// Last, so it paints over everything.
+	canvas.Save()
+	page.overlay.Draw(furnitureCanvas, page.size)
+	canvas.Restore()
 }
 
 // furnitureSizes holds the resolved header and footer heights for one sheet.
@@ -370,6 +381,11 @@ type Page struct {
 	header  *elements.Container
 	content *elements.Container
 	footer  *elements.Container
+
+	// watermark and overlay cover the whole sheet, behind and over everything
+	// else, and are redrawn on every sheet like the header and footer.
+	watermark *elements.Container
+	overlay   *elements.Container
 }
 
 type margins struct {
@@ -384,6 +400,8 @@ func newPage() *Page {
 		header:     elements.NewContainer(),
 		content:    elements.NewContainer(),
 		footer:     elements.NewContainer(),
+		watermark:  elements.NewContainer(),
+		overlay:    elements.NewContainer(),
 	}
 }
 
@@ -438,6 +456,24 @@ func (p *Page) Footer() *Container {
 	return newContainer(p.footer.Set, p.style)
 }
 
+// Watermark returns a slot covering the whole sheet, drawn behind everything else.
+//
+// Unlike the header and footer it ignores the margins and takes the full page, since
+// that is what a watermark or a letterhead background wants. It is drawn on every
+// sheet, and takes no space away from the content.
+func (p *Page) Watermark() *Container {
+	return newContainer(p.watermark.Set, p.style)
+}
+
+// Overlay returns a slot covering the whole sheet, drawn over everything else.
+//
+// This is where a "DRAFT" stamp goes. Like the watermark it spans the full page and
+// reserves no space, so it will paint over content rather than displace it —
+// translucency or rotation is usually wanted.
+func (p *Page) Overlay() *Container {
+	return newContainer(p.overlay.Set, p.style)
+}
+
 // contentArea is the sheet minus its margins.
 func (p *Page) contentArea() core.Size {
 	return core.Size{
@@ -448,23 +484,31 @@ func (p *Page) contentArea() core.Size {
 
 // reset rewinds the whole page, including content progress.
 func (p *Page) reset() {
-	core.ResetTree(p.header, true)
+	for _, part := range p.parts() {
+		core.ResetTree(part, true)
+	}
 	core.ResetTree(p.content, true)
-	core.ResetTree(p.footer, true)
 }
 
-// resetFurniture rewinds only the header and footer, which are redrawn whole on
-// every sheet while the content carries on where it left off.
+// resetFurniture rewinds everything drawn afresh on each sheet, leaving the
+// content to carry on where it left off.
 func (p *Page) resetFurniture() {
-	core.ResetTree(p.header, true)
-	core.ResetTree(p.footer, true)
+	for _, part := range p.parts() {
+		core.ResetTree(part, true)
+	}
+}
+
+// parts lists the furniture: everything redrawn on every sheet.
+func (p *Page) parts() []core.Element {
+	return []core.Element{p.header, p.footer, p.watermark, p.overlay}
 }
 
 // applyContext pushes the page context into context-aware elements.
 func (p *Page) applyContext(ctx core.PageContext) {
-	core.ApplyPageContext(p.header, ctx)
+	for _, part := range p.parts() {
+		core.ApplyPageContext(part, ctx)
+	}
 	core.ApplyPageContext(p.content, ctx)
-	core.ApplyPageContext(p.footer, ctx)
 }
 
 // measureFurniture resolves the header and footer heights for one sheet.

@@ -27,6 +27,9 @@ type TableBuilder struct {
 
 	rowSpacing    float64
 	columnSpacing float64
+
+	// header, when set, is redrawn at the top of every sheet the table occupies.
+	header *elements.Row
 }
 
 // ColumnsRelative declares columns that share the width in proportion to their
@@ -76,6 +79,20 @@ func (t *TableBuilder) ColumnSpacing(v float64) *TableBuilder {
 	return t
 }
 
+// HeaderRow declares a row redrawn at the top of every sheet the table occupies.
+//
+// Without it a heading row is simply row zero, so a table spanning three pages
+// labels only the first — the column resumes at the row it reached. Declaring the
+// heading separately is what lets it repeat.
+//
+// Only one header row is kept; calling this twice replaces the first.
+func (t *TableBuilder) HeaderRow(build func(*TableRowBuilder)) *TableBuilder {
+	row := &elements.Row{Spacing: t.columnSpacing}
+	t.header = row
+	build(&TableRowBuilder{table: t, row: row})
+	return t
+}
+
 // Row appends a row and hands back a builder for its cells.
 func (t *TableBuilder) Row(build func(*TableRowBuilder)) *TableBuilder {
 	row := &elements.Row{Spacing: t.columnSpacing}
@@ -93,7 +110,19 @@ func (t *TableBuilder) build() core.Element {
 		row.Spacing = t.columnSpacing
 		col.Items = append(col.Items, row)
 	}
-	return col
+
+	if t.header == nil {
+		return col
+	}
+
+	t.header.Spacing = t.columnSpacing
+
+	// The header sits outside the paginating column, in a Repeat, which is what
+	// makes it reappear on each continuation.
+	return &elements.Repeat{
+		Header: &elements.Padding{Bottom: t.rowSpacing, Child: t.header},
+		Body:   col,
+	}
 }
 
 // TableRowBuilder fills in the cells of one row.

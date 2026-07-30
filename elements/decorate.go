@@ -218,12 +218,18 @@ func (c *Clip) Children() []core.Element {
 	return []core.Element{c.Child}
 }
 
-// Rotate turns its child about the top-left corner of its box.
+// Rotate turns its child in place, about the centre of its box.
 //
-// The child is measured against unconstrained space rather than the box it will
-// be drawn into, because a rotated element's footprint bears no simple relation
-// to its content size. The element reports the box the parent offered and takes
-// responsibility for staying inside it.
+// Rotating about the centre rather than a corner is what "turn this" ordinarily
+// means: a stamp across a page, a sideways label in a narrow column. About the
+// top-left corner, anything turned more than a few degrees swings out of its own
+// box and usually off the page, leaving the caller to work out a compensating
+// offset by hand.
+//
+// The child is measured against unconstrained space rather than the box it will be
+// drawn into, because a rotated element's footprint bears no simple relation to its
+// content size — which also means text inside a Rotate does not wrap. The element
+// reports the box the parent offered and takes responsibility for staying inside it.
 type Rotate struct {
 	Degrees float64
 	Child   core.Element
@@ -245,9 +251,21 @@ func (r *Rotate) Draw(canvas core.Canvas, available core.Size) {
 		return
 	}
 	plan := r.Child.Measure(core.Size{Width: core.Infinity, Height: core.Infinity})
+	if plan.Wrapped() {
+		return
+	}
 
 	canvas.Save()
+
+	// Move the origin to the centre of the box, turn there, then step back by half
+	// the child so it ends up centred on the point it was turned about.
+	canvas.Translate(core.Position{X: available.Width / 2, Y: available.Height / 2})
 	canvas.Rotate(r.Degrees)
+	canvas.Translate(core.Position{
+		X: -plan.Size.Width / 2,
+		Y: -plan.Size.Height / 2,
+	})
+
 	r.Child.Draw(canvas, plan.Size)
 	canvas.Restore()
 }

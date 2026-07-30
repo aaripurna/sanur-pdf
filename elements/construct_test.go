@@ -575,3 +575,200 @@ func TestSoftResetLeavesProgressIntact(t *testing.T) {
 		t.Errorf("progress = %d after a soft reset, want %d", inner.rendered, before)
 	}
 }
+
+// --- repeating headers ------------------------------------------------------
+
+func TestRepeatReservesTheHeaderHeight(t *testing.T) {
+	r := &elements.Repeat{
+		Header: &fixedElement{w: 100, h: 12},
+		Body:   &fixedElement{w: 100, h: 30},
+	}
+
+	plan := r.Measure(core.Size{Width: 200, Height: 500})
+
+	closeTo(t, "height", plan.Size.Height, 42)
+	closeTo(t, "width", plan.Size.Width, 200)
+	if got := len(r.Children()); got != 2 {
+		t.Errorf("children = %d, want 2", got)
+	}
+}
+
+func TestRepeatPropagatesBodyPagination(t *testing.T) {
+	r := &elements.Repeat{
+		Header: &fixedElement{w: 10, h: 10},
+		Body:   &splittingElement{rows: 10, rowHeight: 10},
+	}
+
+	// Fifty points of space, ten taken by the header, so four body rows fit.
+	plan := r.Measure(core.Size{Width: 100, Height: 50})
+
+	if !plan.Partial() {
+		t.Fatalf("plan = %v, want PartialRender", plan)
+	}
+	closeTo(t, "height", plan.Size.Height, 50)
+}
+
+func TestRepeatRewindsItsHeaderAfterDrawing(t *testing.T) {
+	// The header is rewound after Draw, not before, so the Measure the parent runs
+	// for the next sheet sees a header with nothing rendered. Rewinding on the way
+	// in would leave stale state for that measurement, which would report no height
+	// and let the body draw over the header.
+	header := &splittingElement{rows: 1, rowHeight: 10}
+	r := &elements.Repeat{Header: header, Body: &fixedElement{w: 10, h: 20}}
+
+	available := core.Size{Width: 100, Height: 200}
+
+	r.Measure(available)
+	r.Draw(render_noop{}, available)
+
+	if header.rendered != 0 {
+		t.Errorf("header progress = %d after drawing, want it rewound", header.rendered)
+	}
+
+	// The second sheet therefore measures the header at full height again.
+	plan := r.Measure(available)
+	closeTo(t, "second height", plan.Size.Height, 30)
+}
+
+func TestRepeatWrapsWhenTheHeaderCannotFit(t *testing.T) {
+	r := &elements.Repeat{
+		Header: &fixedElement{w: 10, h: 500},
+		Body:   &fixedElement{w: 10, h: 10},
+	}
+
+	if plan := r.Measure(core.Size{Width: 100, Height: 100}); !plan.Wrapped() {
+		t.Errorf("plan = %v, want Wrap", plan)
+	}
+}
+
+func TestRepeatWrapsWhenTheHeaderWouldPaginate(t *testing.T) {
+	// A header that split would look different on each sheet, defeating the point
+	// of repeating it.
+	r := &elements.Repeat{
+		Header: &splittingElement{rows: 20, rowHeight: 10},
+		Body:   &fixedElement{w: 10, h: 10},
+	}
+
+	if plan := r.Measure(core.Size{Width: 100, Height: 50}); !plan.Wrapped() {
+		t.Errorf("plan = %v, want Wrap", plan)
+	}
+}
+
+func TestRepeatWithoutAHeaderJustDrawsTheBody(t *testing.T) {
+	body := &fixedElement{w: 10, h: 20}
+	r := &elements.Repeat{Body: body}
+
+	plan := r.Measure(core.Size{Width: 100, Height: 100})
+	closeTo(t, "height", plan.Size.Height, 20)
+
+	r.Draw(render_noop{}, core.Size{Width: 100, Height: 20})
+	if body.draws != 1 {
+		t.Errorf("body drawn %d times, want 1", body.draws)
+	}
+}
+
+func TestRepeatWithoutABodyIsEmpty(t *testing.T) {
+	r := &elements.Repeat{Header: &fixedElement{w: 10, h: 10}}
+
+	if plan := r.Measure(core.Size{Width: 100, Height: 100}); !plan.Size.IsEmpty() {
+		t.Errorf("plan = %v, want empty", plan)
+	}
+	r.Draw(render_noop{}, core.Size{Width: 100, Height: 100})
+}
+
+func TestRepeatNaturalSizeIncludesTheHeader(t *testing.T) {
+	r := &elements.Repeat{
+		Header: &fixedElement{w: 10, h: 12},
+		Body: &elements.Aligned{
+			Vertical: core.AlignMiddle,
+			Child:    &fixedElement{w: 10, h: 20},
+		},
+	}
+
+	// Inside a row cell, a Repeat should size to what it holds rather than to the
+	// page — which means seeing through the vertically greedy body.
+	plan := core.NaturalSizeOf(r, core.Size{Width: 100, Height: 900})
+	closeTo(t, "natural height", plan.Size.Height, 32)
+}
+
+// --- layers -----------------------------------------------------------------
+
+func TestLayersTakeSizeFromContentOnly(t *testing.T) {
+	l := &elements.Layers{
+		Below:   []core.Element{&fixedElement{w: 500, h: 500}},
+		Content: &fixedElement{w: 40, h: 20},
+		Above:   []core.Element{&fixedElement{w: 500, h: 500}},
+	}
+
+	// An oversized decoration must not stretch the layout around it.
+	plan := l.Measure(core.Size{Width: 600, Height: 600})
+	closeTo(t, "width", plan.Size.Width, 40)
+	closeTo(t, "height", plan.Size.Height, 20)
+
+	if got := len(l.Children()); got != 3 {
+		t.Errorf("children = %d, want 3", got)
+	}
+}
+
+func TestLayersDrawEveryLayerAtTheAllocatedBox(t *testing.T) {
+	below := &fixedElement{w: 1, h: 1}
+	content := &fixedElement{w: 1, h: 1}
+	above := &fixedElement{w: 1, h: 1}
+
+	l := &elements.Layers{
+		Below:   []core.Element{below},
+		Content: content,
+		Above:   []core.Element{above},
+	}
+
+	l.Draw(render_noop{}, core.Size{Width: 50, Height: 20})
+
+	for name, layer := range map[string]*fixedElement{
+		"below": below, "content": content, "above": above,
+	} {
+		if layer.draws != 1 {
+			t.Errorf("%s drawn %d times, want 1", name, layer.draws)
+		}
+	}
+}
+
+func TestLayersToleratesGapsAndEmptiness(t *testing.T) {
+	// A nil layer comes from a builder slot that was never filled.
+	l := &elements.Layers{Below: []core.Element{nil}, Above: []core.Element{nil}}
+
+	if plan := l.Measure(core.Size{Width: 10, Height: 10}); !plan.Size.IsEmpty() {
+		t.Errorf("plan = %v, want empty", plan)
+	}
+	l.Draw(render_noop{}, core.Size{Width: 10, Height: 10})
+
+	if got := len((&elements.Layers{}).Children()); got != 0 {
+		t.Errorf("an empty stack reports %d children", got)
+	}
+}
+
+func TestLayersNaturalSizeFollowsTheContent(t *testing.T) {
+	l := &elements.Layers{
+		Below: []core.Element{&fixedElement{w: 900, h: 900}},
+		Content: &elements.Aligned{
+			Vertical: core.AlignMiddle,
+			Child:    &fixedElement{w: 10, h: 14},
+		},
+	}
+
+	plan := core.NaturalSizeOf(l, core.Size{Width: 100, Height: 900})
+	closeTo(t, "natural height", plan.Size.Height, 14)
+}
+
+func TestBehindAndOverHelpers(t *testing.T) {
+	content := &fixedElement{w: 20, h: 10}
+
+	behind := elements.Behind(&fixedElement{w: 1, h: 1}, content)
+	if len(behind.Below) != 1 || behind.Content != content || len(behind.Above) != 0 {
+		t.Error("Behind did not put the decoration below the content")
+	}
+
+	over := elements.Over(content, &fixedElement{w: 1, h: 1})
+	if len(over.Above) != 1 || over.Content != content || len(over.Below) != 0 {
+		t.Error("Over did not put the decoration above the content")
+	}
+}

@@ -273,7 +273,7 @@ child they just wrapped, so calls nest rather than overwrite.
 
 **Navigation** — `Link`, `LinkTo`, `Anchor`, `Bookmark`, `BookmarkAt`, `BookmarkNamed`
 
-**Containers** — `Column`, `Row`, `Table`
+**Containers** — `Column`, `Row`, `Table`, `Repeat`, `Layers`
 
 **Leaves** — `Text`, `StyledText`, `RichText`, `PageNumber`, `Image`, `ImageFit`,
 `LineHorizontal`, `LineVertical`, `DashedLineHorizontal`, `DashedLineVertical`,
@@ -342,6 +342,66 @@ c.Item().Row(func(r *sanur.RowBuilder) {
 
 A row is atomic across its width: if one cell cannot fit, the whole row moves to
 the next page rather than leaving a hole.
+
+### Repeating headers
+
+A column that splits across pages resumes at the item it reached, so a heading
+declared as row zero labels only the first sheet. `HeaderRow` declares it
+separately, and it reappears at the top of every continuation:
+
+```go
+c.Item().Table(func(t *sanur.TableBuilder) {
+	t.ColumnsRelative(5, 1, 2)
+	t.HeaderRow(func(r *sanur.TableRowBuilder) {
+		r.Cells("Description", "Qty", "Amount")
+	})
+	for _, item := range items {
+		t.Row(func(r *sanur.TableRowBuilder) { /* ... */ })
+	}
+})
+```
+
+`Repeat` is the general form, for anything that should reappear above paginating
+content:
+
+```go
+c.Item().Repeat(func(r *sanur.RepeatBuilder) {
+	r.Header().PaddingBottom(6).Text("Schedule 1 (continued)")
+	r.Body().Column(func(c *sanur.ColumnBuilder) { /* ... */ })
+})
+```
+
+The header is measured and its height subtracted from what the body may use, so the
+two never overlap, and its state is rewound after each sheet so it draws in full
+every time. A header that would itself paginate is reported as not fitting — a
+heading is only useful whole.
+
+### Layers, watermarks and overlays
+
+PDF has no z-index: things appear in the order they are painted. `Layers` is how
+overlap is expressed, and `Content` alone decides the size so an oversized
+decoration cannot stretch the layout around it:
+
+```go
+c.Item().Layers(func(l *sanur.LayersBuilder) {
+	l.Below().Background(sanur.Grey100).Empty()
+	l.Content().Padding(12).Text("Above the tint, under the badge")
+	l.Above().AlignRight().AlignTop().Text("NEW")
+})
+```
+
+Page-level equivalents span the whole sheet, margins included, reserve no space, and
+repeat on every sheet:
+
+```go
+p.Watermark().Rotate(-38).StyledText("CONFIDENTIAL", faint)  // behind everything
+p.Overlay().Rotate(-38).StyledText("DRAFT", faint)           // over everything
+```
+
+`Rotate` turns its child about the centre of its box, which is what a stamp or a
+sideways label wants — about a corner, anything turned more than a few degrees
+swings off the page. Text inside a `Rotate` does not wrap, since a rotated
+element is measured against unbounded space.
 
 ### Tables
 
@@ -517,7 +577,7 @@ make examples     # or: make invoice / images / report / charts / themed
 
 | Example | What it covers |
 | --- | --- |
-| `examples/invoice` | Tables that paginate, repeated header and footer, page numbering, right-aligned currency |
+| `examples/invoice` | A table that paginates with a repeating header row, a DRAFT overlay, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
 | `examples/report` | `EveryPage` furniture, a clickable table of contents with bookmarks, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
@@ -566,19 +626,19 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-443 tests across eight packages, at 94.8% statement coverage:
+467 tests across eight packages, at 94.8% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 210 | 209 | 99.5% |
-| `elements` | 592 | 567 | 95.8% |
-| `sanur` (root) | 410 | 392 | 95.6% |
+| `elements` | 660 | 630 | 95.5% |
+| `sanur` (root) | 446 | 428 | 96.0% |
 | `internal/pdfobj` | 172 | 164 | 95.3% |
 | `render` | 505 | 473 | 93.7% |
 | `theme` | 179 | 168 | 93.9% |
 | `chart` | 480 | 449 | 93.5% |
 | `fonts` | 219 | 202 | 92.2% |
-| **Total** | **2767** | **2624** | **94.8%** |
+| **Total** | **2871** | **2723** | **94.8%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -634,7 +694,7 @@ missing, so the suite passes on a bare machine.
 - Standard-14 Times (its metrics are not reproduced here; register a TrueType
   font instead)
 - Font subsetting — embedded fonts are included whole
-- Multi-column text flow, and repeating a table header on every page
+- Multi-column text flow
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
 - Page numbers in a table of contents (destinations resolve after layout)
 - Annotations beyond links: notes, highlights, form fields

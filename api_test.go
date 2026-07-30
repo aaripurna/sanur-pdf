@@ -1386,3 +1386,251 @@ func TestDuplicateAnchorsInContentAreStillReported(t *testing.T) {
 		t.Error("expected duplicate content anchors to still be reported")
 	}
 }
+
+// --- repeating headers ------------------------------------------------------
+
+func TestTableHeaderRepeatsOnEverySheet(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Content().Table(func(tb *sanur.TableBuilder) {
+			tb.ColumnsRelative(3, 1).RowSpacing(2)
+			tb.HeaderRow(func(tr *sanur.TableRowBuilder) {
+				tr.Cells("DESCRIPTION", "AMOUNT")
+			})
+			for i := 0; i < 120; i++ {
+				tb.Row(func(tr *sanur.TableRowBuilder) {
+					tr.Cells("line item", "10.00")
+				})
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pages := countPages(data)
+	if pages < 3 {
+		t.Fatalf("expected several sheets, got %d", pages)
+	}
+
+	// The header has to appear once per sheet. Drawing it once and never again is
+	// the bug this exists to prevent, and a header that renders blank after the
+	// first sheet — because its own text state was not rewound — is the subtler
+	// version of the same failure.
+	if got := strings.Count(string(data), "(DESCRIPTION)"); got != pages {
+		t.Errorf("header appears %d times across %d sheets, want one per sheet",
+			got, pages)
+	}
+	if got := strings.Count(string(data), "(AMOUNT)"); got != pages {
+		t.Errorf("second header cell appears %d times, want %d", got, pages)
+	}
+}
+
+func TestTableWithoutAHeaderRowIsUnchanged(t *testing.T) {
+	// Declaring no header must not wrap the table in anything, so an ordinary table
+	// paginates exactly as before.
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Content().Table(func(tb *sanur.TableBuilder) {
+			tb.ColumnsRelative(1, 1)
+			tb.Row(func(tr *sanur.TableRowBuilder) { tr.Cells("only", "row") })
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countPages(data); got != 1 {
+		t.Errorf("page count = %d, want 1", got)
+	}
+}
+
+func TestRepeatBuilderRepeatsArbitraryContent(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Content().Repeat(func(r *sanur.RepeatBuilder) {
+			r.Header().PaddingBottom(6).Text("CONTINUED")
+			r.Body().Column(func(c *sanur.ColumnBuilder) {
+				for i := 0; i < 120; i++ {
+					c.Item().Height(20).Text("row")
+				}
+			})
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pages := countPages(data)
+	if pages < 3 {
+		t.Fatalf("expected several sheets, got %d", pages)
+	}
+	if got := strings.Count(string(data), "(CONTINUED)"); got != pages {
+		t.Errorf("header appears %d times across %d sheets, want one per sheet",
+			got, pages)
+	}
+}
+
+func TestRepeatingHeaderReservesItsSpace(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(0)
+		p.Content().Repeat(func(r *sanur.RepeatBuilder) {
+			r.Header().Size(100, 30).Background(sanur.Red).Empty()
+			r.Body().Size(100, 40).Background(sanur.Blue).Empty()
+		})
+	})
+
+	// The body is offset by the header's height, so the two cannot overlap.
+	wants(t, stream, "0 0 100 30 re f", "1 0 0 1 0 30 cm")
+}
+
+func TestRepeatingHeaderTallerThanThePageIsReported(t *testing.T) {
+	doc := sanur.New()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A5).Margin(20)
+		p.Content().Repeat(func(r *sanur.RepeatBuilder) {
+			// A heading is only useful whole, so one that would itself paginate is
+			// a failure rather than something to truncate.
+			r.Header().Height(5000).Text("enormous")
+			r.Body().Text("body")
+		})
+	})
+
+	_, err := doc.Bytes()
+	if err == nil {
+		t.Fatal("expected an oversized repeating header to be reported")
+	}
+	if !strings.Contains(err.Error(), "does not fit") {
+		t.Errorf("error %q does not explain that nothing fitted", err)
+	}
+}
+
+// --- layers -----------------------------------------------------------------
+
+func TestLayersPaintInOrder(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0).Background(sanur.Transparent)
+		p.Content().Size(100, 50).Layers(func(l *sanur.LayersBuilder) {
+			l.Below().Background(sanur.Red).Empty()
+			l.Content().Background(sanur.Green).Empty()
+			l.Above().Background(sanur.Blue).Empty()
+		})
+	})
+
+	// PDF has no z-index: order of painting is order of appearance, so the sequence
+	// in the stream *is* the stacking.
+	red := strings.Index(stream, "0.898 0.224 0.208 rg")
+	green := strings.Index(stream, "0.263 0.627 0.278 rg")
+	blue := strings.Index(stream, "0.118 0.533 0.898 rg")
+
+	if red < 0 || green < 0 || blue < 0 {
+		t.Fatalf("expected all three layers; got:\n%s", stream)
+	}
+	if !(red < green && green < blue) {
+		t.Errorf("layers painted out of order: below=%d content=%d above=%d",
+			red, green, blue)
+	}
+}
+
+func TestLayersTakeTheirSizeFromTheContent(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Margin(0)
+		p.Content().AlignLeft().Layers(func(l *sanur.LayersBuilder) {
+			// A deliberately oversized decoration must not stretch the layout
+			// around it, or a watermark would dictate the geometry.
+			l.Below().Size(400, 400).Background(sanur.Red).Empty()
+			l.Content().Size(60, 20).Background(sanur.Green).Empty()
+		})
+	})
+
+	// Both layers are drawn at the content's size.
+	if got := strings.Count(stream, "0 0 60 20 re f"); got != 2 {
+		t.Errorf("expected both layers at the content's size, got %d fills:\n%s",
+			got, stream)
+	}
+}
+
+func TestPageWatermarkAndOverlayRepeatOnEverySheet(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30)
+		p.Watermark().AlignCenter().AlignMiddle().Text("BEHIND")
+		p.Overlay().AlignCenter().AlignMiddle().Text("DRAFT")
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			for i := 0; i < 120; i++ {
+				c.Item().Height(20).Text("row")
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pages := countPages(data)
+	if pages < 3 {
+		t.Fatalf("expected several sheets, got %d", pages)
+	}
+	for _, mark := range []string{"(BEHIND)", "(DRAFT)"} {
+		if got := strings.Count(string(data), mark); got != pages {
+			t.Errorf("%s appears %d times across %d sheets, want one per sheet",
+				mark, got, pages)
+		}
+	}
+}
+
+func TestWatermarkIsBehindAndOverlayInFront(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(30).Background(sanur.Transparent)
+		p.Watermark().Text("BEHIND")
+		p.Overlay().Text("INFRONT")
+		p.Content().Text("CONTENT")
+	})
+
+	behind := strings.Index(stream, "(BEHIND)")
+	content := strings.Index(stream, "(CONTENT)")
+	front := strings.Index(stream, "(INFRONT)")
+
+	if behind < 0 || content < 0 || front < 0 {
+		t.Fatalf("expected all three; got:\n%s", stream)
+	}
+	if !(behind < content && content < front) {
+		t.Errorf("painted out of order: watermark=%d content=%d overlay=%d",
+			behind, content, front)
+	}
+}
+
+func TestWatermarkSpansTheWholePageIgnoringMargins(t *testing.T) {
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Size(core.Size{Width: 400, Height: 600}).Margin(50).Background(sanur.Transparent)
+		p.Watermark().Background(sanur.Red).Empty()
+		p.Content().Text("x")
+	})
+
+	// A watermark or letterhead wants the whole sheet, not the text area.
+	wants(t, stream, "0 0 400 600 re f")
+}
+
+func TestRotateTurnsAboutTheCentre(t *testing.T) {
+	// About a corner, anything turned more than a few degrees swings out of its own
+	// box and usually off the page. The transform should therefore move to the
+	// centre, turn, then step back by half the child.
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Size(core.Size{Width: 400, Height: 200}).Margin(0)
+		p.Content().Rotate(90).Size(100, 20).Background(sanur.Red).Empty()
+	})
+
+	wants(t, stream,
+		"1 0 0 1 200 100 cm", // to the centre of the box
+		"0 1 -1 0 0 0 cm",    // the quarter turn
+		"1 0 0 1 -50 -10 cm") // back by half the child
+}

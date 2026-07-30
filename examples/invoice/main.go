@@ -75,6 +75,13 @@ func main() {
 			})
 		})
 
+		// An overlay spans the whole sheet and reserves no space, so it paints over
+		// the content rather than displacing it — which is why it is translucent and
+		// turned out of the way of the text.
+		p.Overlay().Rotate(-38).
+			StyledText("DRAFT", sanur.TextStyle().
+				Size(96).Bold().Color(sanur.RGBA(0x1A, 0x1D, 0x29, 22)))
+
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(14)
 
@@ -110,7 +117,10 @@ func main() {
 			c.Item().Table(func(tb *sanur.TableBuilder) {
 				tb.ColumnsRelative(5, 1, 2, 2).RowSpacing(0).ColumnSpacing(8)
 
-				tb.Row(func(tr *sanur.TableRowBuilder) {
+				// HeaderRow rather than Row: this invoice runs to two pages, and a
+				// column that splits resumes at the row it reached, so a heading
+				// declared as an ordinary row would label only the first sheet.
+				tb.HeaderRow(func(tr *sanur.TableRowBuilder) {
 					header := sanur.TextStyle().Size(8).Bold().Color(sanur.White).LetterSpacing(0.6)
 					tr.Cell().Background(sanur.Indigo).PaddingXY(8, 6).
 						StyledText("DESCRIPTION", header)
