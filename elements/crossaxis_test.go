@@ -338,6 +338,44 @@ func TestNaturalSizeForwardsThroughNestedRow(t *testing.T) {
 	closeTo(t, "height", plan.Size.Height, 26)
 }
 
+func TestNaturalSizeForwardsThroughStackedAligns(t *testing.T) {
+	// Two Aligned elements nest whenever the alignments are written as a chain —
+	// AlignRight().AlignMiddle() is the ordinary way to place a right-hand label —
+	// so the outer one must ask the inner for its natural size rather than measuring
+	// it. Measuring lets the inner expand again and the row goes page-tall.
+	stacked := &elements.Aligned{
+		Horizontal: core.AlignRight,
+		Child: &elements.Aligned{
+			Vertical: core.AlignMiddle,
+			Child:    &fixedElement{w: 10, h: 20},
+		},
+	}
+
+	row := elements.NewRow(0, elements.Constant(50, stacked))
+
+	plan := row.Measure(core.Size{Width: 200, Height: 900})
+
+	closeTo(t, "height", plan.Size.Height, 20)
+}
+
+func TestNaturalSizeForwardsThroughExtend(t *testing.T) {
+	// Extend fills the axis it is told to, so it has the same problem: a row sizing
+	// itself around a horizontally extending cell must still see the child's height.
+	stacked := &elements.Extend{
+		Horizontal: true,
+		Child: &elements.Aligned{
+			Vertical: core.AlignMiddle,
+			Child:    &fixedElement{w: 10, h: 22},
+		},
+	}
+
+	row := elements.NewRow(0, elements.Constant(50, stacked))
+
+	plan := row.Measure(core.Size{Width: 200, Height: 900})
+
+	closeTo(t, "height", plan.Size.Height, 22)
+}
+
 func TestNaturalSizeOfPlainElementFallsBackToMeasure(t *testing.T) {
 	// An element with no special filling behaviour needs no NaturalSize method;
 	// the helper falls through to Measure.

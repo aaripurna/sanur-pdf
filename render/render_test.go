@@ -211,6 +211,70 @@ func TestDrawLineSkipsInvisibleStrokes(t *testing.T) {
 	}
 }
 
+// --- colour spaces ----------------------------------------------------------
+
+func TestCMYKFillsUseThePlateOperator(t *testing.T) {
+	// A CMYK colour has to reach the file as the plates it was written as. Emitting
+	// rg would silently convert it, and a press cannot recover 100% K from a
+	// four-plate approximation of it.
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10},
+			core.CMYKPercent(0, 0, 0, 100))
+	})
+
+	requireContains(t, stream, "0 0 0 1 k")
+	if strings.Contains(stream, "rg") {
+		t.Errorf("a CMYK fill emitted an RGB operator:\n%s", stream)
+	}
+}
+
+func TestCMYKStrokesUseTheUpperCasePlateOperator(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawLine(core.Position{}, core.Position{X: 10},
+			core.CMYKPercent(100, 0, 0, 0), 1)
+	})
+
+	requireContains(t, stream, "1 0 0 0 K")
+	if strings.Contains(stream, "RG") {
+		t.Errorf("a CMYK stroke emitted an RGB operator:\n%s", stream)
+	}
+}
+
+func TestCMYKTextUsesThePlateOperator(t *testing.T) {
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawText("print", core.Position{X: 10, Y: 20}, core.TextStyle{
+			Font:  fonts.MustStandard(fonts.Helvetica),
+			Size:  12,
+			Color: core.CMYKPercent(0, 0, 0, 100),
+		})
+	})
+
+	requireContains(t, stream, "0 0 0 1 k")
+}
+
+func TestBothSpacesCoexistInOneStream(t *testing.T) {
+	// PDF selects a colour space per operation, so an RGB chart and a CMYK logo can
+	// share a page without either being converted.
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10}, core.RGB(255, 0, 0))
+		c.DrawRect(core.Position{X: 20}, core.Size{Width: 10, Height: 10},
+			core.CMYKPercent(0, 100, 100, 0))
+	})
+
+	requireContains(t, stream, "1 0 0 rg", "0 1 1 0 k")
+}
+
+func TestTranslucentCMYKStillSelectsAGraphicsState(t *testing.T) {
+	// Opacity lives in a graphics state dictionary rather than in the colour
+	// operands, so it has to work the same way in either space.
+	stream := drawOn(t, func(c *render.PDFCanvas) {
+		c.DrawRect(core.Position{}, core.Size{Width: 10, Height: 10},
+			core.CMYKPercent(0, 0, 0, 100).WithAlpha(128))
+	})
+
+	requireContains(t, stream, "0 0 0 1 k", "gs")
+}
+
 func TestClipRectEmitsClipPath(t *testing.T) {
 	stream := drawOn(t, func(c *render.PDFCanvas) {
 		c.ClipRect(core.Position{X: 5, Y: 5}, core.Size{Width: 50, Height: 50})

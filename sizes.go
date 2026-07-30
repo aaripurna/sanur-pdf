@@ -78,6 +78,39 @@ func RGBA(r, g, b, a uint8) core.Color { return core.RGBA(r, g, b, a) }
 // Hex parses a hex colour such as "#1E88E5", panicking on malformed input.
 func Hex(s string) core.Color { return core.Hex(s) }
 
+// CMYK builds an opaque colour for print from plate percentages: CMYK(0, 0, 0, 100)
+// is the single-plate black that body text wants.
+//
+// A CMYK colour is written to the file as CMYK. Nothing converts it, so the plates
+// specified here are the plates the press lays down — which is the point, since
+// RGB cannot distinguish 100% K from a four-plate black and both are #000000.
+func CMYK(c, m, y, k float64) core.Color { return core.CMYKPercent(c, m, y, k) }
+
+// CMYKA is CMYK with an opacity, also a percentage.
+func CMYKA(c, m, y, k, alpha float64) core.Color {
+	return core.CMYKPercent(c, m, y, k).WithAlpha(core.PercentToByte(alpha))
+}
+
+// Color parses either notation — "#1E88E5" or "cmyk(0, 0, 0, 100)" — and panics on
+// malformed input, like Hex. Use core.ParseColor for input from outside the program.
+func Color(s string) core.Color {
+	c, err := core.ParseColor(s)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+// Colour spaces, re-exported for callers switching on a colour's space.
+const (
+	SpaceRGB  = core.SpaceRGB
+	SpaceCMYK = core.SpaceCMYK
+)
+
+// Registration is the four-plate black used for crop marks, where every plate must
+// print so that misregistration is visible.
+var Registration = core.CMYKPercent(100, 100, 100, 100)
+
 // Alignment values, re-exported so callers need not import core.
 const (
 	AlignLeft    = core.AlignLeft

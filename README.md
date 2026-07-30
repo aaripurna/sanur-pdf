@@ -91,7 +91,10 @@ Two rules keep the tree predictable, and custom elements need to honour them:
   needs, and a row resolves its height from those answers first. Every
   pass-through decorator forwards the query, since a row cell is usually a
   background wrapping padding wrapping the alignment rather than a bare aligned
-  element.
+  element — and it forwards it *as* a natural-size query, via
+  `core.NaturalSizeOf`, never as a `Measure`. Measuring would let the child expand
+  again, which is what `AlignRight().AlignMiddle()` does: two of these nest, and
+  the outer one has to ask the inner for its content size, not its aligned size.
 
 ## Packages
 
@@ -233,8 +236,9 @@ Details worth knowing:
 - **Every reference is resolved at load**, and *all* problems are reported at once.
   A misspelled colour fails at startup with the available names listed, not as
   invisible text on page forty.
-- **Colour and font fields take a name or a literal.** `"color": "ink"` or
-  `"color": "#FF0000"`; `"font": "body"` or `"font": "Helvetica-Bold"`.
+- **Colour and font fields take a name or a literal.** `"color": "ink"`,
+  `"color": "#FF0000"` or `"color": "cmyk(0, 0, 0, 100)"`; `"font": "body"` or
+  `"font": "Helvetica-Bold"`.
 - **Margins accept shorthand:** `40`, `[24, 40]`, `[10, 20, 30, 40]` in CSS order,
   or `{"top": 10, "left": 20}`.
 - **`Style` and `Color` panic on an unknown name**, listing what exists. A zero
@@ -525,6 +529,59 @@ Text is encoded as WinAnsi, which covers Latin-1 plus the typographic
 punctuation real documents use. Runes outside it become `?` — visibly wrong
 rather than silently missing. Other scripts need a TrueType font.
 
+## Colour, for screen and for print
+
+Colours come in two spaces, and a document may mix them freely — PDF selects a
+colour space per drawing operation, so an RGB chart and a CMYK logo can share a
+page.
+
+```go
+sanur.RGB(30, 136, 229)          // additive, for a screen
+sanur.Hex("#1E88E5")             // the same thing, written the usual way
+sanur.RGBA(30, 136, 229, 128)    // half opaque
+
+sanur.CMYK(0, 0, 0, 100)         // plate percentages, for a press
+sanur.CMYKA(0, 0, 0, 100, 40)    // the fifth value is opacity, also a percentage
+sanur.Color("cmyk(0, 0, 0, 100)")// either notation, parsed
+sanur.Registration               // all four plates, for crop marks
+```
+
+**A CMYK colour is written to the file as CMYK.** Nothing in the output path
+converts it: the canvas emits `k` and `K` rather than `rg` and `RG`, so the plates
+specified here are the plates the press lays down.
+
+That distinction is the whole reason the space is tracked rather than everything
+being normalised to RGB. Black text wants 100% K on its own — one plate, so
+misregistration cannot fringe the letters. A photographic black wants all four.
+Both are `#000000` in RGB, so a conversion has to pick one, and the choice belongs
+where the colour is specified rather than in a conversion nobody sees.
+
+`Color` values are comparable and convert on demand:
+
+```go
+c.Space()             // SpaceRGB or SpaceCMYK
+c.RGBComponents()     // 0..1, converting if needed
+c.CMYKComponents()    // 0..1, converting if needed
+c.WithAlpha(128)      // same colour, same space, different opacity
+c.String()            // "#1E88E5" or "cmyk(0, 0, 0, 100)" — parses back exactly
+```
+
+Conversion between the spaces is the naive formula, adequate for a preview and not
+colour management: a faithful conversion needs the source and destination ICC
+profiles and depends on the press. It only runs when something asks for the other
+space — an RGB colour reaching `CMYKComponents` maps pure black to 100% K rather
+than to four plates, again the safer default for text.
+
+Theme files take either notation wherever a colour is expected, which is what makes
+a print build and a screen build differ by one line:
+
+```json
+{"colors": {"ink": "cmyk(0, 0, 0, 100)", "accent": "cmyk(78, 68, 0, 0)"}}
+```
+
+Opacity is not a colour-space matter: it lives in a PDF graphics state dictionary
+either way, so translucent CMYK works exactly as translucent RGB does.
+
 ## Images
 
 Loading is separate from layout. The fluent API cannot fail, so reading a file
@@ -572,7 +629,7 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 ## Examples
 
 ```
-make examples     # or: make invoice / images / report / charts / themed
+make examples     # or: make invoice / images / report / charts / themed / print
 ```
 
 | Example | What it covers |
@@ -582,6 +639,7 @@ make examples     # or: make invoice / images / report / charts / themed
 | `examples/report` | `EveryPage` furniture, a clickable table of contents with bookmarks, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
+| `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -590,7 +648,7 @@ lines. It also includes a `sparkline` implementing `core.Element` directly, for 
 case where composition genuinely runs out — a polyline through arbitrary points
 cannot be expressed as nested boxes.
 
-All three are executed by the test suite and checked with Ghostscript, so they
+Every example is executed by the test suite and checked with Ghostscript, so they
 cannot silently rot.
 
 ## Page numbering
@@ -626,19 +684,19 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-467 tests across eight packages, at 94.8% statement coverage:
+534 tests across eight packages, at 94.9% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 210 | 209 | 99.5% |
+| `core` | 272 | 269 | 98.9% |
+| `sanur` (root) | 452 | 434 | 96.0% |
 | `elements` | 660 | 630 | 95.5% |
-| `sanur` (root) | 446 | 428 | 96.0% |
 | `internal/pdfobj` | 172 | 164 | 95.3% |
-| `render` | 505 | 473 | 93.7% |
-| `theme` | 179 | 168 | 93.9% |
-| `chart` | 480 | 449 | 93.5% |
+| `theme` | 181 | 170 | 93.9% |
+| `render` | 512 | 480 | 93.8% |
+| `chart` | 479 | 448 | 93.5% |
 | `fonts` | 219 | 202 | 92.2% |
-| **Total** | **2871** | **2723** | **94.8%** |
+| **Total** | **2947** | **2797** | **94.9%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -678,6 +736,11 @@ What the suite checks, and why in that particular way:
   encoder, so CMYK is tested against synthesised marker headers instead — enough
   to pin the colour-space decision and the Adobe inversion, but the CMYK path has
   not been rendered against a real file.
+- **Print colour is measured, not inspected.** Ghostscript's `inkcov` device
+  reports coverage per plate, so a CMYK colour that was quietly routed through RGB
+  is caught by the plates that come back inked. `cmyk(100, 0, 0, 100)` and
+  `cmyk(0, 0, 0, 100)` are the same `#000000` in RGB and look identical in a
+  viewer; only the separations tell them apart.
 - **Real interpreters** parse the output. Ghostscript and `pdftotext` run where
   installed, which is the only way to catch a structurally plausible file that no
   reader will actually open, and to confirm the text is text rather than shapes.
@@ -701,6 +764,9 @@ missing, so the suite passes on a bare machine.
 - Tagged and accessible output (PDF/UA)
 - Encryption, and PDF/A conformance
 - Gradients and blend modes (dash patterns, arcs and paths are implemented)
+- Spot colours (`Separation` and `DeviceN`), overprint control, and ICC-based colour
+  management — RGB and CMYK are written as `DeviceRGB` and `DeviceCMYK`, so a
+  conversion between them is arithmetic rather than a managed transform
 - Clipping to an arbitrary path — `Clip` takes a rectangle only
 
 ## License

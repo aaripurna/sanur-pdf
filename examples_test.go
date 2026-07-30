@@ -23,12 +23,19 @@ var examples = []struct {
 	name     string
 	pkg      string
 	minPages int
+
+	// maxPages pins an example that is meant to be a fixed length. Zero leaves it
+	// unbounded, which is right for the examples whose point is that they paginate.
+	// The print sheet is a designed one-pager: content spilling onto a second sheet
+	// would take the crop marks with it and still pass every other check here.
+	maxPages int
 }{
-	{"invoice", "./examples/invoice", 2},
-	{"images", "./examples/images", 2},
-	{"report", "./examples/report", 4},
-	{"charts", "./examples/charts", 5},
-	{"themed", "./examples/themed", 1},
+	{name: "invoice", pkg: "./examples/invoice", minPages: 2},
+	{name: "images", pkg: "./examples/images", minPages: 2},
+	{name: "report", pkg: "./examples/report", minPages: 4},
+	{name: "charts", pkg: "./examples/charts", minPages: 5},
+	{name: "themed", pkg: "./examples/themed", minPages: 1},
+	{name: "print", pkg: "./examples/print", minPages: 1, maxPages: 1},
 }
 
 func TestExamplesProduceValidDocuments(t *testing.T) {
@@ -58,9 +65,14 @@ func TestExamplesProduceValidDocuments(t *testing.T) {
 			if !bytes.HasSuffix(data, []byte("%%EOF\n")) {
 				t.Errorf("%s output is truncated", example.name)
 			}
-			if pages := countPages(data); pages < example.minPages {
+			pages := countPages(data)
+			if pages < example.minPages {
 				t.Errorf("%s produced %d pages, want at least %d",
 					example.name, pages, example.minPages)
+			}
+			if example.maxPages > 0 && pages > example.maxPages {
+				t.Errorf("%s produced %d pages, want at most %d",
+					example.name, pages, example.maxPages)
 			}
 
 			assertNoSubstitutedGlyphs(t, example.name, data)
@@ -171,6 +183,40 @@ func assertRendersCleanly(t *testing.T, name string, data []byte) {
 // Comparing whole files is the point. Asserting on individual colours would only
 // prove the theme was read; the interesting property is that appearance is
 // externalised well enough for a swap to be visible throughout.
+// TestPrintExampleInksEveryPlate checks the claim the print example's own doc
+// comment makes.
+//
+// A press-ready sheet that quietly lost a separation renders identically enough in
+// a viewer that nobody notices until the proof comes back, so the example is worth
+// measuring rather than eyeballing.
+func TestPrintExampleInksEveryPlate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping example execution in short mode")
+	}
+
+	out := filepath.Join(t.TempDir(), "print.pdf")
+	if combined, err := exec.Command("go", "run", "./examples/print", out).CombinedOutput(); err != nil {
+		t.Fatalf("running the print example: %v\n%s", err, combined)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plates := inkCoverage(t, data)
+
+	// A threshold rather than a bare "greater than zero": the registration marks alone
+	// would ink every plate a trace, and that would hide a swatch section that had
+	// stopped rendering.
+	for i, coverage := range plates {
+		if coverage < 0.01 {
+			t.Errorf("the %s plate carries only %.4f; coverage was %v",
+				plateNames[i], coverage, plates)
+		}
+	}
+}
+
 func TestThemesChangeTheOutput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping example execution in short mode")

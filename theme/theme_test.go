@@ -128,8 +128,8 @@ func TestColorsAreReadAsHex(t *testing.T) {
 	if got := th.Color("ink"); got != core.RGB(0x1A, 0x1D, 0x29) {
 		t.Errorf("ink = %v", got)
 	}
-	if got := th.Color("faded"); got.A != 0x80 {
-		t.Errorf("faded alpha = %d, want 0x80", got.A)
+	if got := th.Color("faded"); got.Opacity() != 0x80 {
+		t.Errorf("faded alpha = %d, want 0x80", got.Opacity())
 	}
 	// The shorthand form repeats each digit.
 	if got := th.Color("short"); got != core.RGB(0xAA, 0xBB, 0xCC) {
@@ -140,6 +140,48 @@ func TestColorsAreReadAsHex(t *testing.T) {
 func TestMalformedColorIsRejected(t *testing.T) {
 	if _, err := theme.Parse([]byte(`{"colors": {"bad": "not a colour"}}`)); err == nil {
 		t.Error("a malformed colour was accepted")
+	}
+}
+
+func TestColorsCanBeSpecifiedForPrint(t *testing.T) {
+	// The point of naming colours in a file is that a print build and a screen build
+	// can differ by one line, so the file has to be able to say CMYK.
+	th := parse(t, `{
+	  "page":   {"background": "cmyk(0, 0, 0, 0)"},
+	  "colors": {"registration": "cmyk(0, 0, 0, 100)", "faded": "cmyk(0, 0, 0, 100, 50)"},
+	  "text":   {"body": {"font": "Helvetica", "size": 10, "color": "cmyk(100, 0, 0, 0)"}}
+	}`)
+
+	if got := th.Color("registration"); got != core.CMYKPercent(0, 0, 0, 100) {
+		t.Errorf("registration = %v (%v space)", got, got.Space())
+	}
+	if got := th.Color("faded"); got.Space() != core.SpaceCMYK || got.Opacity() != 128 {
+		t.Errorf("faded = %v at alpha %d", got, got.Opacity())
+	}
+	// A literal in either notation is accepted wherever a name is.
+	if got := th.Style("body").Color; got != core.CMYKPercent(100, 0, 0, 0) {
+		t.Errorf("body colour = %v", got)
+	}
+	if got := th.Background(); got.Space() != core.SpaceCMYK {
+		t.Errorf("background = %v (%v space), want CMYK", got, got.Space())
+	}
+}
+
+func TestUnknownColorNameIsNotMistakenForALiteral(t *testing.T) {
+	// A typo has to be reported against the declared colours rather than handed to
+	// the parser and coming back as a syntax complaint about the name.
+	message := mustFail(t, `{"colors": {"ink": "#000"}, "text": {"body": {"font": "Helvetica", "size": 10, "color": "inkk"}}}`)
+
+	for _, want := range []string{"inkk", "ink", "cmyk("} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error %q does not mention %q", message, want)
+		}
+	}
+}
+
+func TestMalformedCMYKLiteralIsRejected(t *testing.T) {
+	if _, err := theme.Parse([]byte(`{"colors": {"bad": "cmyk(0, 0, 0)"}}`)); err == nil {
+		t.Error("a three-plate colour was accepted")
 	}
 }
 

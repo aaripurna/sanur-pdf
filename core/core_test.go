@@ -198,8 +198,8 @@ func TestRGBIsOpaque(t *testing.T) {
 	if !c.Opaque() || !c.Visible() {
 		t.Errorf("RGB colour = %v, want opaque and visible", c)
 	}
-	if c.A != 255 {
-		t.Errorf("alpha = %d, want 255", c.A)
+	if c.Opacity() != 255 {
+		t.Errorf("alpha = %d, want 255", c.Opacity())
 	}
 }
 
@@ -253,7 +253,7 @@ func TestHexPanicsOnMalformedInput(t *testing.T) {
 }
 
 func TestColorComponentsAreNormalised(t *testing.T) {
-	r, g, b := core.RGB(255, 128, 0).Components()
+	r, g, b := core.RGB(255, 128, 0).RGBComponents()
 
 	closeTo(t, "r", r, 1)
 	closeTo(t, "g", g, 128.0/255)
@@ -267,6 +267,218 @@ func TestColorStringOmitsAlphaWhenOpaque(t *testing.T) {
 	}
 	if got := core.RGBA(0x1E, 0x88, 0xE5, 0x80).String(); got != "#1E88E580" {
 		t.Errorf("translucent String = %q, want #1E88E580", got)
+	}
+}
+
+// --- CMYK colour ------------------------------------------------------------
+
+func TestCMYKKeepsItsSpace(t *testing.T) {
+	// The space has to survive, because the whole point of specifying CMYK is that
+	// the plates reach the printer rather than a conversion of them.
+	c := core.CMYKPercent(0, 0, 0, 100)
+
+	if c.Space() != core.SpaceCMYK {
+		t.Errorf("space = %v, want CMYK", c.Space())
+	}
+
+	cy, m, y, k := c.CMYKComponents()
+	closeTo(t, "cyan", cy, 0)
+	closeTo(t, "magenta", m, 0)
+	closeTo(t, "yellow", y, 0)
+	closeTo(t, "black", k, 1)
+}
+
+func TestRGBIsTheZeroSpace(t *testing.T) {
+	// A Color nobody has set must behave as RGB, since that is what every existing
+	// caller means.
+	if core.Transparent.Space() != core.SpaceRGB {
+		t.Errorf("zero colour space = %v, want RGB", core.Transparent.Space())
+	}
+	if core.RGB(1, 2, 3).Space() != core.SpaceRGB {
+		t.Error("RGB constructor did not produce an RGB colour")
+	}
+}
+
+func TestCMYKPercentClampsOutOfRangeValues(t *testing.T) {
+	// Percentages are arithmetic output as often as literals, and a clamped plate is
+	// closer to the intent than an error.
+	cy, m, y, k := core.CMYKPercent(-20, 150, 0, 100).CMYKComponents()
+
+	closeTo(t, "cyan", cy, 0)
+	closeTo(t, "magenta", m, 1)
+	closeTo(t, "yellow", y, 0)
+	closeTo(t, "black", k, 1)
+}
+
+func TestSpaceString(t *testing.T) {
+	if got := core.SpaceRGB.String(); got != "RGB" {
+		t.Errorf("SpaceRGB = %q", got)
+	}
+	if got := core.SpaceCMYK.String(); got != "CMYK" {
+		t.Errorf("SpaceCMYK = %q", got)
+	}
+}
+
+func TestWithAlphaKeepsTheSpaceAndPlates(t *testing.T) {
+	faded := core.CMYKPercent(10, 20, 30, 40).WithAlpha(0x80)
+
+	if faded.Space() != core.SpaceCMYK {
+		t.Errorf("space = %v, want CMYK", faded.Space())
+	}
+	if faded.Opacity() != 0x80 {
+		t.Errorf("alpha = %d, want 0x80", faded.Opacity())
+	}
+
+	// The plates are stored as bytes, so a percentage lands on the nearest 1/255.
+	cy, _, _, k := faded.CMYKComponents()
+	closeTo(t, "cyan", cy, 26.0/255)
+	closeTo(t, "black", k, 102.0/255)
+}
+
+func TestCMYKConvertsToRGBForPreview(t *testing.T) {
+	// Not colour management — a faithful conversion needs ICC profiles — but a CMYK
+	// colour still has to answer an RGB query for anything that only speaks RGB.
+	r, g, b := core.CMYKPercent(0, 100, 100, 0).RGBComponents()
+
+	closeTo(t, "r", r, 1)
+	closeTo(t, "g", g, 0)
+	closeTo(t, "b", b, 0)
+}
+
+func TestRGBConvertsToCMYKWithBlackSeparated(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		in          core.Color
+		cy, m, y, k float64
+	}{
+		// Pure black becomes 100% K alone rather than four plates, which is the safer
+		// default for text: four-plate black on a press needs registration to be
+		// perfect or the letters fringe.
+		{"black", core.RGB(0, 0, 0), 0, 0, 0, 1},
+		{"white", core.RGB(255, 255, 255), 0, 0, 0, 0},
+		{"red", core.RGB(255, 0, 0), 0, 1, 1, 0},
+		{"mid grey", core.RGB(128, 128, 128), 0, 0, 0, 1 - 128.0/255},
+	} {
+		cy, m, y, k := tc.in.CMYKComponents()
+
+		closeTo(t, tc.name+" cyan", cy, tc.cy)
+		closeTo(t, tc.name+" magenta", m, tc.m)
+		closeTo(t, tc.name+" yellow", y, tc.y)
+		closeTo(t, tc.name+" black", k, tc.k)
+	}
+}
+
+func TestParseColorAcceptsBothNotations(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want core.Color
+	}{
+		{"#1E88E5", core.RGB(0x1E, 0x88, 0xE5)},
+		{"cmyk(0, 0, 0, 100)", core.CMYKPercent(0, 0, 0, 100)},
+		{"CMYK(100,0,0,0)", core.CMYKPercent(100, 0, 0, 0)},
+		{"  cmyk( 10% , 20% , 30% , 40% )  ", core.CMYKPercent(10, 20, 30, 40)},
+		// A fifth value is opacity, also a percentage.
+		{"cmyk(0, 0, 0, 100, 50)", core.CMYKPercent(0, 0, 0, 100).WithAlpha(128)},
+	} {
+		got, err := core.ParseColor(tc.in)
+		if err != nil {
+			t.Errorf("ParseColor(%q): %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseColor(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseColorRejectsMalformedCMYK(t *testing.T) {
+	for _, in := range []string{
+		"cmyk(0, 0, 0)",
+		"cmyk(0, 0, 0, 0, 0, 0)",
+		"cmyk(0, 0, 0, black)",
+		"cmyk 0 0 0 0",
+		"cmyk(0, 0, 0, 0",
+	} {
+		if _, err := core.ParseColor(in); err == nil {
+			t.Errorf("ParseColor(%q) succeeded, want an error", in)
+		}
+	}
+}
+
+func TestColorStringRoundTrips(t *testing.T) {
+	// String and ParseColor have to be exact inverses, or a theme written back out
+	// would not reload as the same document.
+	for _, want := range []core.Color{
+		core.RGB(0x1E, 0x88, 0xE5),
+		core.RGBA(0x1E, 0x88, 0xE5, 0x80),
+		core.CMYKPercent(0, 0, 0, 100),
+		core.CMYKPercent(10.2, 20.4, 30.6, 40.8),
+		core.CMYK(1, 2, 3, 4),
+		core.CMYKA(200, 150, 100, 50, 77),
+	} {
+		text := want.String()
+
+		got, err := core.ParseColor(text)
+		if err != nil {
+			t.Errorf("ParseColor(%q): %v", text, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%q parsed back as %q", text, got.String())
+		}
+	}
+}
+
+func TestCMYKStringUsesPlatePercentages(t *testing.T) {
+	if got := core.CMYKPercent(0, 0, 0, 100).String(); got != "cmyk(0, 0, 0, 100)" {
+		t.Errorf("String = %q, want cmyk(0, 0, 0, 100)", got)
+	}
+	if got := core.CMYKPercent(0, 0, 0, 100).WithAlpha(128).String(); got != "cmyk(0, 0, 0, 100, 50.2)" {
+		t.Errorf("translucent String = %q", got)
+	}
+}
+
+func TestColorJSONRoundTrip(t *testing.T) {
+	type holder struct {
+		Ink   core.Color `json:"ink"`
+		Plate core.Color `json:"plate"`
+	}
+
+	in := holder{Ink: core.RGBA(0x1E, 0x88, 0xE5, 0x80), Plate: core.CMYKPercent(0, 0, 0, 100)}
+
+	encoded, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+
+	var out holder
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		t.Fatalf("unmarshalling %s: %v", encoded, err)
+	}
+	if out != in {
+		t.Errorf("round trip gave %+v, want %+v (via %s)", out, in, encoded)
+	}
+}
+
+func TestColorJSONNullMeansInherit(t *testing.T) {
+	// Zeroing on null would make an explicit null mean "invisible", which reads as a
+	// missing colour rather than as deference to the default.
+	colour := core.RGB(1, 2, 3)
+
+	if err := colour.UnmarshalJSON([]byte("null")); err != nil {
+		t.Fatalf("null: %v", err)
+	}
+	if colour != core.RGB(1, 2, 3) {
+		t.Errorf("null overwrote the colour with %v", colour)
+	}
+}
+
+func TestColorJSONRejectsNonStrings(t *testing.T) {
+	for _, in := range []string{`42`, `{"r": 1}`, `"#nope"`, `[]`} {
+		var colour core.Color
+		if err := colour.UnmarshalJSON([]byte(in)); err == nil {
+			t.Errorf("UnmarshalJSON(%s) succeeded, want an error", in)
+		}
 	}
 }
 

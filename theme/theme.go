@@ -274,28 +274,39 @@ func (t *Theme) resolvePage() error {
 	return nil
 }
 
-// resolveColor accepts a name from Colors or a hex literal.
+// resolveColor accepts a name from Colors or a colour literal in either
+// notation: "#4F46E5" for screen, "cmyk(0, 0, 0, 100)" for print.
 //
-// Allowing both means a theme can pull shared values out into Colors without
-// having to, and a one-off shade needs no invented name.
+// Allowing both a name and a literal means a theme can pull shared values out
+// into Colors without having to, and a one-off shade needs no invented name.
 func (t *Theme) resolveColor(ref string) (core.Color, error) {
 	if colour, ok := t.Colors[ref]; ok {
 		return colour, nil
 	}
 
-	if strings.HasPrefix(ref, "#") {
-		return core.ParseHex(ref)
+	if isColorLiteral(ref) {
+		return core.ParseColor(ref)
 	}
 
 	available := sortedKeys(t.Colors)
 	if len(available) == 0 {
 		return core.Color{}, fmt.Errorf(
 			"colour %q is not defined, and no colours are declared "+
-				"(use a hex literal such as \"#4F46E5\")", ref)
+				"(use a literal such as \"#4F46E5\" or \"cmyk(0, 0, 0, 100)\")", ref)
 	}
 	return core.Color{}, fmt.Errorf(
-		"colour %q is not defined (available: %s, or use a hex literal)",
+		"colour %q is not defined (available: %s, or use a literal such as "+
+			"\"#4F46E5\" or \"cmyk(0, 0, 0, 100)\")",
 		ref, strings.Join(available, ", "))
+}
+
+// isColorLiteral reports whether a reference looks like a colour rather than a
+// name, so that a plain typo is reported against the declared colours instead of
+// being handed to the parser and coming back as a syntax complaint.
+func isColorLiteral(ref string) bool {
+	trimmed := strings.TrimSpace(ref)
+	return strings.HasPrefix(trimmed, "#") ||
+		strings.HasPrefix(strings.ToLower(trimmed), "cmyk(")
 }
 
 // resolveFont accepts an alias from Fonts or a registered font name.

@@ -281,6 +281,26 @@ func TestAlignmentPositionsASmallerChild(t *testing.T) {
 	}
 }
 
+func TestChainedAlignmentsDoNotInflateTheRow(t *testing.T) {
+	// AlignRight().AlignMiddle() is the ordinary way to place a label on the right of
+	// a header, and it nests two Aligned elements. The row must still take its height
+	// from the content: a page-tall row is a layout that succeeds and looks wrong,
+	// which no error can catch.
+	stream := streamOf(t, func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(0)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Item().Row(func(r *sanur.RowBuilder) {
+				r.RelativeItem(1).Text("left")
+				r.ConstantItem(120).AlignRight().AlignMiddle().Text("right")
+			})
+			c.Item().Size(10, 10).Background(sanur.Red).Empty()
+		})
+	})
+
+	// The swatch follows one line of text, so the row is a line high.
+	wants(t, stream, "1 0 0 1 0 12.21 cm")
+}
+
 // --- decoration ------------------------------------------------------------
 
 func TestRoundedBackgroundEmitsCurves(t *testing.T) {

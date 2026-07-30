@@ -34,7 +34,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report charts themed
+examples: invoice images report charts themed print
 
 .PHONY: invoice
 invoice:
@@ -51,6 +51,10 @@ report:
 .PHONY: charts
 charts:
 	go run ./examples/charts charts.pdf
+
+.PHONY: print
+print:
+	go run ./examples/print print.pdf
 
 # Rendered twice on purpose: the same program, two theme files.
 .PHONY: themed

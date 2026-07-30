@@ -156,8 +156,11 @@ func (e *Extend) Measure(available core.Size) core.SpacePlan {
 
 // NaturalSize reports the child's own size, ignoring this element's tendency to
 // fill, so a row can size itself around an extending cell.
+//
+// As with Aligned, the query descends as a natural-size query so that a child which
+// also expands does not undo the answer.
 func (e *Extend) NaturalSize(available core.Size) core.SpacePlan {
-	return core.MeasureChild(e.Child, available)
+	return core.NaturalSizeOf(e.Child, available)
 }
 
 func (e *Extend) Draw(canvas core.Canvas, available core.Size) {
@@ -208,8 +211,14 @@ func (a *Aligned) Measure(available core.Size) core.SpacePlan {
 }
 
 // NaturalSize reports the child's own size, before alignment expands the box.
+//
+// The query goes down as a natural-size query, not as a Measure. Asking the child
+// to Measure would let it expand in turn, which is exactly what happens when the
+// alignments are written as a chain: AlignRight().AlignMiddle() nests two of these,
+// and the outer one asking the inner to Measure gets the full height back — so a
+// row containing one silently became page-tall.
 func (a *Aligned) NaturalSize(available core.Size) core.SpacePlan {
-	return core.MeasureChild(a.Child, available)
+	return core.NaturalSizeOf(a.Child, available)
 }
 
 func (a *Aligned) Draw(canvas core.Canvas, available core.Size) {

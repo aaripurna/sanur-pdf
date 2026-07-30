@@ -211,12 +211,10 @@ func (c *PDFCanvas) DrawPath(path *core.Path, style core.PathStyle) {
 
 	c.withPathAlpha(style, func() {
 		if style.Fills() {
-			r, g, b := style.Fill.Components()
-			c.op("%s %s %s rg", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+			c.setFillColor(style.Fill)
 		}
 		if style.Strokes() {
-			r, g, b := style.Stroke.Components()
-			c.op("%s %s %s RG", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+			c.setStrokeColor(style.Stroke)
 			c.applyStrokeState(style)
 		}
 
@@ -295,10 +293,10 @@ func (c *PDFCanvas) emitPath(path *core.Path) {
 func (c *PDFCanvas) withPathAlpha(style core.PathStyle, draw func()) {
 	fillAlpha, strokeAlpha := uint8(255), uint8(255)
 	if style.Fills() {
-		fillAlpha = style.Fill.A
+		fillAlpha = style.Fill.Opacity()
 	}
 	if style.Strokes() {
-		strokeAlpha = style.Stroke.A
+		strokeAlpha = style.Stroke.Opacity()
 	}
 
 	// A stroke's width, cap, join and dash are graphics state too, so the save is
@@ -329,8 +327,7 @@ func (c *PDFCanvas) DrawLine(from, to core.Position, stroke core.Color, width fl
 		return
 	}
 	c.withAlpha(stroke, func() {
-		r, g, b := stroke.Components()
-		c.op("%s %s %s RG", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+		c.setStrokeColor(stroke)
 		c.op("%s w", pdfobj.Num(width))
 		c.op("%s %s m %s %s l S",
 			pdfobj.Num(from.X), pdfobj.Num(from.Y),
@@ -431,9 +428,35 @@ func (c *PDFCanvas) DrawImage(img core.Image, pos core.Position, size core.Size)
 	c.Restore()
 }
 
+// setFillColor selects a non-stroking colour in the colour's own space.
+//
+// PDF has one operator per space, so the space a colour was specified in decides
+// which is emitted — and a CMYK colour reaches the printer as the plates it was
+// written as, with no conversion in between.
 func (c *PDFCanvas) setFillColor(col core.Color) {
-	r, g, b := col.Components()
+	if col.Space() == core.SpaceCMYK {
+		cy, m, y, k := col.CMYKComponents()
+		c.op("%s %s %s %s k",
+			pdfobj.Num(cy), pdfobj.Num(m), pdfobj.Num(y), pdfobj.Num(k))
+		return
+	}
+
+	r, g, b := col.RGBComponents()
 	c.op("%s %s %s rg", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
+}
+
+// setStrokeColor is setFillColor for the stroking operators, which PDF spells in
+// upper case: RG against rg, K against k.
+func (c *PDFCanvas) setStrokeColor(col core.Color) {
+	if col.Space() == core.SpaceCMYK {
+		cy, m, y, k := col.CMYKComponents()
+		c.op("%s %s %s %s K",
+			pdfobj.Num(cy), pdfobj.Num(m), pdfobj.Num(y), pdfobj.Num(k))
+		return
+	}
+
+	r, g, b := col.RGBComponents()
+	c.op("%s %s %s RG", pdfobj.Num(r), pdfobj.Num(g), pdfobj.Num(b))
 }
 
 // withAlpha runs draw with a transparency state selected when the colour is not
@@ -445,7 +468,7 @@ func (c *PDFCanvas) withAlpha(col core.Color, draw func()) {
 		return
 	}
 	c.Save()
-	c.op("%s gs", pdfobj.Name(c.builder.alphaResource(col.A, col.A)))
+	c.op("%s gs", pdfobj.Name(c.builder.alphaResource(col.Opacity(), col.Opacity())))
 	draw()
 	c.Restore()
 }

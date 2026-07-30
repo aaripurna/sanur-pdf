@@ -218,6 +218,5 @@ func (s Style) axisStyle() core.PathStyle {
 
 // fade returns a colour at reduced opacity, for area fills beneath a line.
 func fade(c core.Color, alpha uint8) core.Color {
-	c.A = alpha
-	return c
+	return c.WithAlpha(alpha)
 }
