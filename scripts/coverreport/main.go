@@ -19,7 +19,7 @@ import (
 )
 
 // modulePrefix is trimmed from package paths so the output stays readable.
-const modulePrefix = "codeberg.org/aaripurna/sanur"
+const modulePrefix = "github.com/aaripurna/sanur-pdf"
 
 type stats struct {
 	total   int

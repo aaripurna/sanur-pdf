@@ -1,8 +1,8 @@
 package sanur
 
 import (
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
 )
 
 // columnSpec is one column's width rule.

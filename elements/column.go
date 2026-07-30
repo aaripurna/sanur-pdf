@@ -3,7 +3,7 @@ package elements
 import (
 	"math"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // Column stacks children vertically and is the element that makes documents

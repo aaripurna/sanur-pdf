@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
-	"codeberg.org/aaripurna/sanur/render"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
+	"github.com/aaripurna/sanur-pdf/render"
 )
 
 // MaxPagesPerSection bounds how many sheets one page definition may produce.

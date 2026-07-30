@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur/internal/pdfobj"
+	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
 func TestNumAvoidsExponentNotation(t *testing.T) {

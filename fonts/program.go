@@ -1,6 +1,6 @@
 package fonts
 
-import "codeberg.org/aaripurna/sanur/core"
+import "github.com/aaripurna/sanur-pdf/core"
 
 // FontProgram is everything the PDF writer needs to emit a font resource.
 //

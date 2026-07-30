@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // PageBreak forces everything after it onto a new page.

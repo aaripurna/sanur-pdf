@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur"
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
-	"codeberg.org/aaripurna/sanur/render"
+	sanur "github.com/aaripurna/sanur-pdf"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
+	"github.com/aaripurna/sanur-pdf/render"
 )
 
 // streamOf renders a one-page document and returns its content stream as text.

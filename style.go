@@ -1,8 +1,8 @@
 package sanur
 
 import (
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/fonts"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/fonts"
 )
 
 // Family groups the four faces of a typeface so that Bold and Italic can be

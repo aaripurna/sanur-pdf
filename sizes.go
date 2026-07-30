@@ -1,6 +1,6 @@
 package sanur
 
-import "codeberg.org/aaripurna/sanur/core"
+import "github.com/aaripurna/sanur-pdf/core"
 
 // PDF measures everything in points: 72 to the inch, regardless of the units the
 // page size was originally defined in. The conversion helpers below exist so

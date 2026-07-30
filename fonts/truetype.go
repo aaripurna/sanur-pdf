@@ -10,7 +10,7 @@ import (
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // trueTypeFont is a parsed .ttf/.otf face.

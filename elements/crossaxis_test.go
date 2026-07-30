@@ -3,8 +3,8 @@ package elements_test
 import (
 	"testing"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
 )
 
 // A row has to know its own height before it can align anything inside it, but a

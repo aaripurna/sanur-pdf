@@ -7,6 +7,21 @@ You describe a document as a tree of nested containers and sanur works out where
 everything goes, breaking content across as many pages as it needs. No template
 files, no manual cursor arithmetic, no `MoveTo(x, y)`.
 
+```
+go get github.com/aaripurna/sanur-pdf
+```
+
+The package is named `sanur` while the module path ends in `sanur-pdf`, so an
+explicit alias keeps the identifier obvious at a glance:
+
+```go
+import (
+	sanur "github.com/aaripurna/sanur-pdf"
+	"github.com/aaripurna/sanur-pdf/elements"
+	"github.com/aaripurna/sanur-pdf/render"
+)
+```
+
 ```go
 doc := sanur.New().Title("Report")
 
@@ -80,9 +95,11 @@ Two rules keep the tree predictable, and custom elements need to honour them:
 
 ## Packages
 
+All paths below are relative to `github.com/aaripurna/sanur-pdf`.
+
 | Package | Contents |
 | --- | --- |
-| `sanur` | Fluent API: `Document`, `Page`, `Container`, styles, sizes, colours. |
+| `.` (`sanur`) | Fluent API: `Document`, `Page`, `Container`, styles, sizes, colours. |
 | `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`. No PDF knowledge. |
 | `elements` | Layout primitives implementing `core.Element`. |
 | `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading. |

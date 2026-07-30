@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/fonts"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/fonts"
 )
 
 func TestWinAnsiRoundTrip(t *testing.T) {

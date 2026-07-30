@@ -1,6 +1,6 @@
 package elements
 
-import "codeberg.org/aaripurna/sanur/core"
+import "github.com/aaripurna/sanur-pdf/core"
 
 // Padding insets its child on each edge.
 //

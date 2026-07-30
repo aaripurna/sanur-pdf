@@ -3,7 +3,7 @@ package elements
 import (
 	"math"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // Background paints a filled rectangle behind its child.

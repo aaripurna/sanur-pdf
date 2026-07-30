@@ -13,9 +13,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/fonts"
-	"codeberg.org/aaripurna/sanur/render"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/fonts"
+	"github.com/aaripurna/sanur-pdf/render"
 )
 
 var a4 = core.Size{Width: 595.28, Height: 841.89}

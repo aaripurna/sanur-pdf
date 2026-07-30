@@ -1,4 +1,4 @@
-module codeberg.org/aaripurna/sanur
+module github.com/aaripurna/sanur-pdf
 
 go 1.26.4
 

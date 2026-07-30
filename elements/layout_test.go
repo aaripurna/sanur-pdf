@@ -4,9 +4,9 @@ import (
 	"math"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
-	"codeberg.org/aaripurna/sanur/fonts"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
+	"github.com/aaripurna/sanur-pdf/fonts"
 )
 
 func testStyle(size float64) core.TextStyle {

@@ -20,7 +20,7 @@ vet:
 cover:
 	@go test -count=1 -covermode=atomic -coverpkg=$(COVERPKG) \
 		-coverprofile=coverage.out $(PKGS) \
-		| sed -e 's/ in codeberg.*$$//' -e 's|codeberg.org/aaripurna/||'
+		| sed -e 's/ in github.com.*$$//' -e 's|github.com/aaripurna/||'
 	@echo
 	@go run ./scripts/coverreport coverage.out
 

@@ -9,8 +9,8 @@ import (
 	"io/fs"
 	"os"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/internal/pdfobj"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
 // DecodeImage inspects encoded image bytes and prepares them for embedding.

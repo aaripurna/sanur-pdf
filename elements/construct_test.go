@@ -3,8 +3,8 @@ package elements_test
 import (
 	"testing"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
 )
 
 // The constructors and incremental builders below exist for callers assembling

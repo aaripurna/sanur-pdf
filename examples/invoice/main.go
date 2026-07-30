@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"codeberg.org/aaripurna/sanur"
+	sanur "github.com/aaripurna/sanur-pdf"
 )
 
 type lineItem struct {

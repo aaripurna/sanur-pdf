@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur"
+	sanur "github.com/aaripurna/sanur-pdf"
 )
 
 // generate builds a document and fails the test on error.

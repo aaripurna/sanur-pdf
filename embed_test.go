@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur"
-	"codeberg.org/aaripurna/sanur/fonts"
-	"codeberg.org/aaripurna/sanur/render"
+	sanur "github.com/aaripurna/sanur-pdf"
+	"github.com/aaripurna/sanur-pdf/fonts"
+	"github.com/aaripurna/sanur-pdf/render"
 )
 
 // systemFont finds a TrueType font to exercise the embedding path.

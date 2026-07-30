@@ -18,9 +18,9 @@ import (
 	"os"
 	"strings"
 
-	"codeberg.org/aaripurna/sanur"
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/elements"
+	sanur "github.com/aaripurna/sanur-pdf"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/elements"
 )
 
 // Brand colours, kept in one place so the composition helpers below agree.

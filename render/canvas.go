@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 
-	"codeberg.org/aaripurna/sanur/core"
-	"codeberg.org/aaripurna/sanur/fonts"
-	"codeberg.org/aaripurna/sanur/internal/pdfobj"
+	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/fonts"
+	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
 )
 
 // kappa is the control-point ratio that makes a cubic Bézier approximate a

@@ -1,6 +1,6 @@
 package render
 
-import "codeberg.org/aaripurna/sanur/core"
+import "github.com/aaripurna/sanur-pdf/core"
 
 // DiscardCanvas satisfies core.Canvas and throws every operation away.
 //

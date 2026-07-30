@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // The standard-14 fonts are the typefaces every conforming PDF reader is

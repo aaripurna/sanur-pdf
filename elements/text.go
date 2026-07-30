@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"codeberg.org/aaripurna/sanur/core"
+	"github.com/aaripurna/sanur-pdf/core"
 )
 
 // Span is a run of text sharing one style. A Text element holds several so that

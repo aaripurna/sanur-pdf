@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/aaripurna/sanur"
+	sanur "github.com/aaripurna/sanur-pdf"
 )
 
 func TestTableColumnsConstantGivesFixedWidths(t *testing.T) {
