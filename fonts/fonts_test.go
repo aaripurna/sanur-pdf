@@ -337,3 +337,174 @@ func TestTrueTypeCachesBothHitsAndMisses(t *testing.T) {
 		}
 	}
 }
+
+// --- the name registry ------------------------------------------------------
+
+func TestNewRegistryHoldsTheBuiltInFaces(t *testing.T) {
+	r := fonts.NewRegistry()
+
+	// The standard-14 are always present, so configuration naming one works with no
+	// setup at all. This also guards the initialisation order: the map they come
+	// from is built by a function precisely so a registry created in a variable
+	// initialiser does not find it empty.
+	for _, name := range fonts.StandardNames() {
+		if _, ok := r.Lookup(name); !ok {
+			t.Errorf("built-in face %q is missing from a fresh registry", name)
+		}
+	}
+	if got := len(r.Names()); got != 8 {
+		t.Errorf("a fresh registry holds %d fonts, want 8", got)
+	}
+}
+
+func TestDefaultRegistryIsSeeded(t *testing.T) {
+	// The shared registry is a package-level variable, so this is where an
+	// initialisation-order regression would show up first.
+	if _, ok := fonts.Lookup(fonts.Helvetica); !ok {
+		t.Error("the shared registry has no Helvetica")
+	}
+	if len(fonts.RegisteredNames()) < 8 {
+		t.Errorf("the shared registry holds %d fonts, want at least the built-in 8",
+			len(fonts.RegisteredNames()))
+	}
+}
+
+func TestRegistryRegisterAndResolve(t *testing.T) {
+	r := fonts.NewRegistry()
+	face := fonts.MustStandard(fonts.CourierBold)
+
+	if err := r.Register("Brand", face); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := r.Resolve("Brand")
+	if err != nil {
+		t.Fatalf("resolving a registered font: %v", err)
+	}
+	if resolved.Name() != fonts.CourierBold {
+		t.Errorf("resolved %q, want %q", resolved.Name(), fonts.CourierBold)
+	}
+}
+
+func TestRegistryReplacesOnCollision(t *testing.T) {
+	// Replacing is deliberate: overriding a built-in with a real licensed face is a
+	// reasonable thing to want, unlike the accidental collisions that destination
+	// names guard against.
+	r := fonts.NewRegistry()
+	if err := r.Register(fonts.Helvetica, fonts.MustStandard(fonts.Courier)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := r.Lookup(fonts.Helvetica)
+	if got.Name() != fonts.Courier {
+		t.Errorf("registering over a name gave %q, want the replacement", got.Name())
+	}
+}
+
+func TestRegistryRejectsBadRegistrations(t *testing.T) {
+	r := fonts.NewRegistry()
+
+	if err := r.Register("", fonts.MustStandard(fonts.Helvetica)); err == nil {
+		t.Error("an empty name was accepted")
+	}
+	if err := r.Register("Nil", nil); err == nil {
+		t.Error("a nil font was accepted")
+	}
+}
+
+func TestRegistryResolveListsAlternatives(t *testing.T) {
+	r := fonts.NewRegistry()
+
+	_, err := r.Resolve("Comic Sans")
+	if err == nil {
+		t.Fatal("expected an error for an unregistered name")
+	}
+	// A bad font name is nearly always a typo or a missing registration, and both
+	// are quicker to fix when the message says what was available.
+	for _, want := range []string{"Comic Sans", fonts.Helvetica} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestRegistryNamesAreSorted(t *testing.T) {
+	r := fonts.NewRegistry()
+	if err := r.Register("Aardvark", fonts.MustStandard(fonts.Helvetica)); err != nil {
+		t.Fatal(err)
+	}
+
+	names := r.Names()
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Fatalf("names are not sorted: %v", names)
+		}
+	}
+	if names[0] != "Aardvark" {
+		t.Errorf("first name = %q, want the alphabetically first", names[0])
+	}
+}
+
+func TestRegistryLoadsTrueTypeFromDisk(t *testing.T) {
+	path := systemFont(t)
+	r := fonts.NewRegistry()
+
+	face, err := r.LoadTrueType("Loaded", path)
+	if err != nil {
+		t.Fatalf("loading %s: %v", path, err)
+	}
+
+	// Loading registers it, which is the whole point of the method.
+	resolved, err := r.Resolve("Loaded")
+	if err != nil {
+		t.Fatalf("a loaded font should be registered: %v", err)
+	}
+	if resolved != face {
+		t.Error("the resolved font is not the one that was loaded")
+	}
+}
+
+func TestRegistryRegistersTrueTypeFromBytes(t *testing.T) {
+	data, err := os.ReadFile(systemFont(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := fonts.NewRegistry()
+	if _, err := r.RegisterTrueTypeBytes("Embedded", data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Resolve("Embedded"); err != nil {
+		t.Errorf("a registered font should resolve: %v", err)
+	}
+}
+
+func TestRegistryReportsBadTrueTypeInput(t *testing.T) {
+	r := fonts.NewRegistry()
+
+	if _, err := r.LoadTrueType("Absent", "/no/such/font.ttf"); err == nil {
+		t.Error("expected an error for a missing file")
+	}
+	if _, err := r.RegisterTrueTypeBytes("Garbage", []byte("not a font")); err == nil {
+		t.Error("expected an error for data that is not a font")
+	}
+}
+
+func TestSharedRegistryFunctions(t *testing.T) {
+	// Registering into the shared registry is process-wide, so this uses a name no
+	// other test looks up.
+	face := fonts.MustStandard(fonts.CourierOblique)
+	if err := fonts.Register("test-shared-face", face); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := fonts.Lookup("test-shared-face"); !ok || got != face {
+		t.Error("the shared registry did not return the registered face")
+	}
+	if _, err := fonts.Resolve("test-shared-face"); err != nil {
+		t.Errorf("resolving from the shared registry: %v", err)
+	}
+	if _, err := fonts.Resolve("test-absent-face"); err == nil {
+		t.Error("expected an error from the shared registry")
+	}
+}

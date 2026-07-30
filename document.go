@@ -265,7 +265,7 @@ func (d *Document) layoutPage(
 			return 0, err
 		}
 
-		d.drawSheet(canvas, page, inner, furniture, contentPlan.Size)
+		d.drawSheet(canvas, page, inner, furniture, contentPlan.Size, sheets == 1)
 
 		if err := canvas.Err(); err != nil {
 			return 0, err
@@ -314,6 +314,7 @@ func (d *Document) drawSheet(
 	inner core.Size,
 	furniture furnitureSizes,
 	contentSize core.Size,
+	firstSheet bool,
 ) {
 	if page.background.Visible() {
 		canvas.DrawRect(core.Position{}, page.size, page.background)
@@ -321,10 +322,18 @@ func (d *Document) drawSheet(
 
 	origin := core.Position{X: page.margin.left, Y: page.margin.top}
 
+	// Furniture is redrawn on every sheet, so anything it registers by name has to
+	// be registered once. Links still fire every time — a footer URL should be
+	// clickable on every page — but destinations and outline entries do not.
+	furnitureCanvas := canvas
+	if !firstSheet {
+		furnitureCanvas = core.WithoutAnchors(canvas)
+	}
+
 	if furniture.headerHeight > 0 {
 		canvas.Save()
 		canvas.Translate(origin)
-		page.header.Draw(canvas, core.Size{Width: inner.Width, Height: furniture.headerHeight})
+		page.header.Draw(furnitureCanvas, core.Size{Width: inner.Width, Height: furniture.headerHeight})
 		canvas.Restore()
 	}
 
@@ -340,7 +349,7 @@ func (d *Document) drawSheet(
 		footerTop := page.size.Height - page.margin.bottom - furniture.footerHeight
 		canvas.Save()
 		canvas.Translate(core.Position{X: page.margin.left, Y: footerTop})
-		page.footer.Draw(canvas, core.Size{Width: inner.Width, Height: furniture.footerHeight})
+		page.footer.Draw(furnitureCanvas, core.Size{Width: inner.Width, Height: furniture.footerHeight})
 		canvas.Restore()
 	}
 }

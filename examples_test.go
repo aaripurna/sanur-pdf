@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/aaripurna/sanur-pdf/theme"
 )
 
 // The examples are the documentation people actually run, so they are compiled
@@ -26,6 +28,7 @@ var examples = []struct {
 	{"images", "./examples/images", 2},
 	{"report", "./examples/report", 4},
 	{"charts", "./examples/charts", 5},
+	{"themed", "./examples/themed", 1},
 }
 
 func TestExamplesProduceValidDocuments(t *testing.T) {
@@ -159,5 +162,68 @@ func assertRendersCleanly(t *testing.T, name string, data []byte) {
 			t.Errorf("ghostscript complained about %s:\n%s", name, out)
 			return
 		}
+	}
+}
+
+// TestThemesChangeTheOutput checks the claim the themed example makes: the same
+// program under two theme files produces different documents.
+//
+// Comparing whole files is the point. Asserting on individual colours would only
+// prove the theme was read; the interesting property is that appearance is
+// externalised well enough for a swap to be visible throughout.
+func TestThemesChangeTheOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping example execution in short mode")
+	}
+
+	dir := t.TempDir()
+	rendered := map[string][]byte{}
+
+	for _, name := range []string{"light", "dark"} {
+		out := filepath.Join(dir, name+".pdf")
+
+		cmd := exec.Command("go", "run", "./examples/themed", out,
+			filepath.Join("examples", "themed", "themes", name+".json"))
+		if combined, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("rendering the %s theme: %v\n%s", name, err, combined)
+		}
+
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered[name] = data
+
+		assertNoSubstitutedGlyphs(t, name, data)
+		assertRendersCleanly(t, name, data)
+	}
+
+	if bytes.Equal(rendered["light"], rendered["dark"]) {
+		t.Error("the two themes produced identical output; the theme is not being applied")
+	}
+
+	// The text is the same in both: a theme changes appearance, not content.
+	lightText := textRuns(t, rendered["light"])
+	darkText := textRuns(t, rendered["dark"])
+
+	if len(lightText) != len(darkText) {
+		t.Errorf("light draws %d text runs and dark draws %d; a theme should not "+
+			"change what the document says", len(lightText), len(darkText))
+	}
+}
+
+func TestThemeErrorsNameTheFile(t *testing.T) {
+	// A program loading several themes needs to know which one was wrong.
+	broken := filepath.Join(t.TempDir(), "broken.json")
+	if err := os.WriteFile(broken, []byte(`{"page": {"size": "Nonesuch"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := theme.Load(broken)
+	if err == nil {
+		t.Fatal("expected a malformed theme to be rejected")
+	}
+	if !strings.Contains(err.Error(), "broken.json") {
+		t.Errorf("error %q does not name the file", err)
 	}
 }

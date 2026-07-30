@@ -1292,3 +1292,97 @@ func TestLinkedDocumentRendersCleanly(t *testing.T) {
 	}
 	assertRendersCleanly(t, "links", data)
 }
+
+func TestAnchorInARepeatingHeaderRegistersOnce(t *testing.T) {
+	// A header is redrawn on every sheet, so an anchor inside one fires once per
+	// page. A destination is single-valued by name, so only the first can win —
+	// but registering the rest trips the duplicate guard and tells the author they
+	// reused a name when they wrote exactly one.
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Header().Anchor("top").Text("Header")
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			for i := 0; i < 120; i++ {
+				c.Item().Height(20).Text("row")
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("an anchor in a header should be allowed: %v", err)
+	}
+	if got := countPages(data); got < 3 {
+		t.Fatalf("expected several sheets, got %d", got)
+	}
+}
+
+func TestBookmarkInARepeatingHeaderAppearsOnce(t *testing.T) {
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Header().Bookmark("Section").Text("Header")
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			for i := 0; i < 120; i++ {
+				c.Item().Height(20).Text("row")
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One outline entry, not one per sheet.
+	if got := strings.Count(string(data), "/Title (Section)"); got != 1 {
+		t.Errorf("got %d outline entries titled Section, want 1", got)
+	}
+}
+
+func TestLinksInFurnitureStillFireOnEverySheet(t *testing.T) {
+	// The suppression must be narrow: a URL in a footer should be clickable on
+	// every page, unlike a destination which can only be registered once.
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Footer().Link("https://example.com").Text("Terms")
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			for i := 0; i < 120; i++ {
+				c.Item().Height(20).Text("row")
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pages := countPages(data)
+	if pages < 3 {
+		t.Fatalf("expected several sheets, got %d", pages)
+	}
+	if got := strings.Count(string(data), "(https://example.com)"); got != pages {
+		t.Errorf("footer link appears %d times across %d sheets, want one per sheet",
+			got, pages)
+	}
+}
+
+func TestDuplicateAnchorsInContentAreStillReported(t *testing.T) {
+	// Narrowing the guard must not disable it: two anchors in content sharing a
+	// name is still a mistake.
+	doc := sanur.New()
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(40)
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Item().Anchor("same").Text("first")
+			c.Item().Anchor("same").Text("second")
+		})
+	})
+
+	if _, err := doc.Bytes(); err == nil {
+		t.Error("expected duplicate content anchors to still be reported")
+	}
+}

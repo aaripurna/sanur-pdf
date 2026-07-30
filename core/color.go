@@ -100,3 +100,35 @@ func (c Color) String() string {
 	}
 	return fmt.Sprintf("#%02X%02X%02X%02X", c.R, c.G, c.B, c.A)
 }
+
+// MarshalJSON writes the colour as a hex string.
+//
+// Hex rather than an object of channels, because that is how a colour is written
+// everywhere a person types one — a stylesheet, a design tool, a brand guide — and
+// configuration is meant to be edited by hand.
+func (c Color) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + c.String() + `"`), nil
+}
+
+// UnmarshalJSON reads a hex string in any of the forms ParseHex accepts.
+//
+// A JSON null leaves the colour untouched rather than zeroing it, so an explicit
+// null means "inherit" rather than "invisible" — matching the resolve-against-
+// defaults convention the rest of the library uses.
+func (c *Color) UnmarshalJSON(data []byte) error {
+	text := string(data)
+	if text == "null" {
+		return nil
+	}
+
+	if len(text) < 2 || text[0] != '"' || text[len(text)-1] != '"' {
+		return fmt.Errorf("sanur: a colour must be a hex string, got %s", text)
+	}
+
+	parsed, err := ParseHex(text[1 : len(text)-1])
+	if err != nil {
+		return err
+	}
+	*c = parsed
+	return nil
+}

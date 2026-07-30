@@ -225,20 +225,30 @@ var courierWidths = []widthRun{
 }
 
 // standard14 indexes the built-in faces by their PDF base font name.
-var standard14 = map[string]*standardFont{}
+//
+// This is built by a function rather than filled in an init, so that Go's
+// initialisation ordering sees the dependency. Anything else in the package whose
+// own initialiser reads this map — the default font registry does — would otherwise
+// run first and find it empty, since variable initialisers all run before any init
+// function.
+var standard14 = buildStandard14()
 
-func init() {
+func buildStandard14() map[string]*standardFont {
+	faces := make(map[string]*standardFont, 8)
+
 	// Helvetica: Ascender 718, Descender -207 (Helvetica.afm).
 	for _, name := range []string{Helvetica, HelveticaOblique} {
-		standard14[name] = build(name, 718, 207, 278, helveticaWidths)
+		faces[name] = build(name, 718, 207, 278, helveticaWidths)
 	}
 	for _, name := range []string{HelveticaBold, HelveticaBoldOblique} {
-		standard14[name] = build(name, 718, 207, 278, helveticaBoldWidths)
+		faces[name] = build(name, 718, 207, 278, helveticaBoldWidths)
 	}
 	// Courier: Ascender 629, Descender -157 (Courier.afm).
 	for _, name := range []string{Courier, CourierBold, CourierOblique, CourierBoldOblique} {
-		standard14[name] = build(name, 629, 157, courierAdvance, courierWidths)
+		faces[name] = build(name, 629, 157, courierAdvance, courierWidths)
 	}
+
+	return faces
 }
 
 // Standard returns a built-in font by name, e.g. fonts.Helvetica.

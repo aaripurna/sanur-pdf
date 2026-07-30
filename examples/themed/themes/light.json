@@ -1,0 +1,43 @@
+{
+  "page": {
+    "size": "A4",
+    "margin": [34, 42],
+    "background": "paper"
+  },
+
+  "colors": {
+    "paper":    "#FFFFFF",
+    "ink":      "#1A1D29",
+    "muted":    "#6B7280",
+    "hairline": "#E5E7EB",
+    "accent":   "#4F46E5",
+    "band":     "#F9FAFB"
+  },
+
+  "fonts": {
+    "body": "Helvetica",
+    "bold": "Helvetica-Bold",
+    "mono": "Courier"
+  },
+
+  "text": {
+    "title":   {"font": "bold", "size": 22, "color": "ink", "letterSpacing": -0.2},
+    "heading": {"font": "bold", "size": 12, "color": "ink"},
+    "body":    {"font": "body", "size": 9.5, "color": "ink", "lineHeight": 1.35},
+    "caption": {"font": "body", "size": 8, "color": "muted"},
+    "label":   {"font": "bold", "size": 7, "color": "muted", "letterSpacing": 0.8},
+    "figure":  {"font": "bold", "size": 9.5, "color": "ink"},
+    "code":    {"font": "mono", "size": 8, "color": "accent"}
+  },
+
+  "chart": {
+    "palette":    ["accent", "#0891B2", "#059669", "#D97706"],
+    "grid":       "hairline",
+    "gridDash":   [3, 3],
+    "axis":       "#9CA3AF",
+    "legend":     "top",
+    "tickCount":  4,
+    "labelStyle": "caption",
+    "valueStyle": "figure"
+  }
+}

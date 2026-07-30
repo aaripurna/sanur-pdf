@@ -2,49 +2,44 @@ package sanur
 
 import "github.com/aaripurna/sanur-pdf/core"
 
-// PDF measures everything in points: 72 to the inch, regardless of the units the
-// page size was originally defined in. The conversion helpers below exist so
-// layout code can be written in whatever unit the design was specified in.
+// Units and page sizes are defined in core, since a size is pure geometry and
+// anything reading one from configuration needs to name it without the figures
+// being written down twice. They are re-exported here so layout code needs only
+// the one import.
 const (
-	Point      = 1.0
-	Inch       = 72.0
-	Millimetre = Inch / 25.4
-	Centimetre = Millimetre * 10
+	Point      = core.Point
+	Inch       = core.Inch
+	Millimetre = core.Millimetre
+	Centimetre = core.Centimetre
 )
 
 // Mm converts millimetres to points.
-func Mm(v float64) float64 { return v * Millimetre }
+func Mm(v float64) float64 { return core.Mm(v) }
 
 // Cm converts centimetres to points.
-func Cm(v float64) float64 { return v * Centimetre }
+func Cm(v float64) float64 { return core.Cm(v) }
 
 // In converts inches to points.
-func In(v float64) float64 { return v * Inch }
+func In(v float64) float64 { return core.In(v) }
 
 // Standard page sizes in points, portrait.
-//
-// The ISO A series is defined in millimetres, so its point sizes are not round
-// numbers; they are given to two decimal places, which is finer than any printer
-// can place a sheet.
 var (
-	A0 = core.Size{Width: 2383.94, Height: 3370.39}
-	A1 = core.Size{Width: 1683.78, Height: 2383.94}
-	A2 = core.Size{Width: 1190.55, Height: 1683.78}
-	A3 = core.Size{Width: 841.89, Height: 1190.55}
-	A4 = core.Size{Width: 595.28, Height: 841.89}
-	A5 = core.Size{Width: 419.53, Height: 595.28}
-	A6 = core.Size{Width: 297.64, Height: 419.53}
+	A0 = core.A0
+	A1 = core.A1
+	A2 = core.A2
+	A3 = core.A3
+	A4 = core.A4
+	A5 = core.A5
+	A6 = core.A6
 
-	Letter    = core.Size{Width: 612, Height: 792}
-	Legal     = core.Size{Width: 612, Height: 1008}
-	Tabloid   = core.Size{Width: 792, Height: 1224}
-	Executive = core.Size{Width: 521.86, Height: 756}
+	Letter    = core.Letter
+	Legal     = core.Legal
+	Tabloid   = core.Tabloid
+	Executive = core.Executive
 )
 
 // Landscape swaps a size's dimensions.
-func Landscape(s core.Size) core.Size {
-	return core.Size{Width: s.Height, Height: s.Width}
-}
+func Landscape(s core.Size) core.Size { return core.Landscape(s) }
 
 // Common colours, so a first document needs no colour arithmetic.
 var (

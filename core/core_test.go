@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -462,3 +463,148 @@ type plainElement struct{}
 
 func (plainElement) Measure(core.Size) core.SpacePlan { return core.EmptyRender() }
 func (plainElement) Draw(core.Canvas, core.Size)      {}
+
+// --- colour JSON ------------------------------------------------------------
+
+func TestColorRoundTripsThroughJSON(t *testing.T) {
+	for _, original := range []core.Color{
+		core.RGB(0x1A, 0x1D, 0x29),
+		core.RGBA(0x4F, 0x46, 0xE5, 0x80),
+		core.RGB(0, 0, 0),
+		core.RGB(255, 255, 255),
+	} {
+		encoded, err := json.Marshal(original)
+		if err != nil {
+			t.Errorf("marshalling %v: %v", original, err)
+			continue
+		}
+
+		var decoded core.Color
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Errorf("unmarshalling %s: %v", encoded, err)
+			continue
+		}
+		if decoded != original {
+			t.Errorf("round trip gave %v, want %v (via %s)", decoded, original, encoded)
+		}
+	}
+}
+
+func TestColorMarshalsAsHex(t *testing.T) {
+	// Hex rather than an object of channels, because that is how a colour is
+	// written wherever a person types one.
+	encoded, err := json.Marshal(core.RGB(0x4F, 0x46, 0xE5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `"#4F46E5"` {
+		t.Errorf("encoded = %s, want a hex string", encoded)
+	}
+
+	// Alpha only appears when it matters.
+	encoded, _ = json.Marshal(core.RGBA(0, 0, 0, 0x80))
+	if string(encoded) != `"#00000080"` {
+		t.Errorf("translucent encoded = %s", encoded)
+	}
+}
+
+func TestColorUnmarshalAcceptsEveryHexForm(t *testing.T) {
+	for _, tc := range []struct {
+		json string
+		want core.Color
+	}{
+		{`"#abc"`, core.RGB(0xAA, 0xBB, 0xCC)},
+		{`"#1E88E5"`, core.RGB(0x1E, 0x88, 0xE5)},
+		{`"1E88E5"`, core.RGB(0x1E, 0x88, 0xE5)},
+		{`"#1E88E580"`, core.RGBA(0x1E, 0x88, 0xE5, 0x80)},
+	} {
+		var got core.Color
+		if err := json.Unmarshal([]byte(tc.json), &got); err != nil {
+			t.Errorf("unmarshalling %s: %v", tc.json, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s decoded to %v, want %v", tc.json, got, tc.want)
+		}
+	}
+}
+
+func TestColorUnmarshalNullLeavesTheValueAlone(t *testing.T) {
+	// An explicit null means "inherit" rather than "invisible", matching the
+	// resolve-against-defaults convention used elsewhere.
+	existing := core.RGB(1, 2, 3)
+
+	if err := json.Unmarshal([]byte("null"), &existing); err != nil {
+		t.Fatal(err)
+	}
+	if existing != core.RGB(1, 2, 3) {
+		t.Errorf("null overwrote the colour, giving %v", existing)
+	}
+}
+
+func TestColorUnmarshalRejectsNonStrings(t *testing.T) {
+	for _, bad := range []string{`42`, `true`, `{"r": 1}`, `[1,2,3]`, `"not a colour"`} {
+		var got core.Color
+		if err := json.Unmarshal([]byte(bad), &got); err == nil {
+			t.Errorf("%s was accepted as a colour", bad)
+		}
+	}
+}
+
+// --- page sizes -------------------------------------------------------------
+
+func TestParseSizeNamesAndOrientation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want core.Size
+	}{
+		{"A4", core.A4},
+		{"a4", core.A4},
+		{"  A4  ", core.A4},
+		{"Letter", core.Letter},
+		{"A4 landscape", core.Landscape(core.A4)},
+		{"a4 LANDSCAPE", core.Landscape(core.A4)},
+		{"A4 portrait", core.A4},
+		{"Executive", core.Executive},
+	} {
+		got, ok := core.ParseSize(tc.name)
+		if !ok {
+			t.Errorf("ParseSize(%q) failed", tc.name)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ParseSize(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestParseSizeRejectsUnknownInput(t *testing.T) {
+	for _, bad := range []string{"", "   ", "Foolscap", "A4 sideways", "A99"} {
+		if _, ok := core.ParseSize(bad); ok {
+			t.Errorf("ParseSize(%q) succeeded", bad)
+		}
+	}
+}
+
+func TestEverySizeNameParses(t *testing.T) {
+	// The advertised names have to resolve, or an error message listing them would
+	// be lying.
+	for _, name := range core.SizeNames() {
+		if _, ok := core.ParseSize(name); !ok {
+			t.Errorf("advertised size %q does not parse", name)
+		}
+	}
+}
+
+func TestUnitConversionsInCore(t *testing.T) {
+	closeTo(t, "one inch", core.In(1), 72)
+	closeTo(t, "25.4 mm", core.Mm(25.4), 72)
+	closeTo(t, "one cm", core.Cm(1), 28.3464566929)
+}
+
+func TestLandscapeSwapsDimensionsInCore(t *testing.T) {
+	got := core.Landscape(core.A4)
+	if got.Width != core.A4.Height || got.Height != core.A4.Width {
+		t.Errorf("Landscape(A4) = %v, want the dimensions swapped", got)
+	}
+}

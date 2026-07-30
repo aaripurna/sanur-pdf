@@ -95,11 +95,52 @@ func TextStyle() *StyleBuilder {
 }
 
 // StyleFrom starts a style from an existing one, for local overrides.
+//
+// It is also the bridge from a resolved core.TextStyle — one loaded from a theme,
+// say — back into the builder the fluent API takes.
+//
+// The base's own face is carried across, which matters more than it looks. A
+// builder resolves its font from a family and a weight at Build time, so without
+// this a style derived from a registered or themed font would silently come back as
+// Helvetica. Where the face belongs to one of the built-in families, that family is
+// used so Bold and Italic still work; a face from anywhere else becomes a
+// single-face family, and asking for bold keeps the face rather than substituting
+// something that merely is bold.
 func StyleFrom(base core.TextStyle) *StyleBuilder {
-	b := &StyleBuilder{family: HelveticaFamily, style: base}
+	b := &StyleBuilder{style: base}
 	b.bold = base.Weight >= core.FontSemiBold
 	b.italic = base.Italic
+
+	switch family, ok := familyOf(base.Font); {
+	case base.Font == nil:
+		b.family = HelveticaFamily
+	case ok:
+		b.family = family
+	default:
+		b.family = Family{Regular: base.Font}
+	}
 	return b
+}
+
+// familyOf finds the built-in family a face belongs to.
+//
+// Knowing this is what lets a derived style still switch weight: given
+// Helvetica-Bold, Italic should reach Helvetica-BoldOblique rather than giving up.
+func familyOf(f core.Font) (Family, bool) {
+	if f == nil {
+		return Family{}, false
+	}
+
+	for _, family := range []Family{HelveticaFamily, CourierFamily} {
+		for _, face := range []core.Font{
+			family.Regular, family.Bold, family.Italic, family.BoldItalic,
+		} {
+			if face == f {
+				return family, true
+			}
+		}
+	}
+	return Family{}, false
 }
 
 // Family sets the typeface.

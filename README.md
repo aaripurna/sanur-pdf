@@ -103,7 +103,8 @@ All paths below are relative to `github.com/aaripurna/sanur-pdf`.
 | `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`. No PDF knowledge. |
 | `elements` | Layout primitives implementing `core.Element`. |
 | `chart` | Static line, area, bar, pie and donut charts. Depends only on `core` and `fonts`. |
-| `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading. |
+| `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading, the name registry. |
+| `theme` | Document styling loaded from JSON. Depends on `core`, `fonts` and `chart`. |
 | `render` | The PDF canvas, the discard canvas, image embedding. |
 | `internal/pdfobj` | PDF objects, streams, xref, trailer. |
 
@@ -185,6 +186,74 @@ Two things to know:
 - **A table of contents cannot show page numbers yet.** Destinations resolve after
   layout, so the page a section landed on is not available to the text that
   describes it. The entries are clickable; they just cannot say "page 7".
+
+## Theming from JSON
+
+`theme` loads the static half of a document's appearance — page geometry, named
+colours, named text styles, chart styling — from JSON, so a designer can change it
+without a rebuild.
+
+```json
+{
+  "page":   {"size": "A4", "margin": [34, 42], "background": "paper"},
+  "colors": {"paper": "#FFFFFF", "ink": "#1A1D29", "accent": "#4F46E5"},
+  "fonts":  {"body": "Helvetica", "bold": "Helvetica-Bold"},
+  "text": {
+    "body":    {"font": "body", "size": 9.5, "color": "ink", "lineHeight": 1.35},
+    "heading": {"font": "bold", "size": 12,  "color": "accent"}
+  },
+  "chart": {"palette": ["accent", "#0891B2"], "legend": "top", "tickCount": 4}
+}
+```
+
+```go
+th, err := theme.Load("brand.json")
+
+doc.EveryPage(func(p *sanur.Page) {
+	p.Size(th.PageSize()).MarginEach(th.Margins()).Background(th.Background())
+	p.DefaultTextStyle(sanur.StyleFrom(th.Style("body")))
+})
+
+c.Item().StyledText("Heading", sanur.StyleFrom(th.Style("heading")))
+c.Item().Height(165).Element(&chart.Bar{ /* ... */ Style: th.ChartStyle()})
+```
+
+`sanur.StyleFrom` is the bridge from a resolved `core.TextStyle` back into the
+builder the fluent API takes; elements accept a `core.TextStyle` directly.
+
+**Structure stays in Go, and that is the whole design.** JSON has no loops or
+conditionals, so putting document structure in it means inventing a template
+language inside string values — a DSL with no type checking, no editor support, and
+errors that point at a config file rather than at code. The first time a report
+needs one table row per invoice line, a `for` loop wins outright. What JSON is
+genuinely good at is flat, static configuration.
+
+Details worth knowing:
+
+- **Every reference is resolved at load**, and *all* problems are reported at once.
+  A misspelled colour fails at startup with the available names listed, not as
+  invisible text on page forty.
+- **Colour and font fields take a name or a literal.** `"color": "ink"` or
+  `"color": "#FF0000"`; `"font": "body"` or `"font": "Helvetica-Bold"`.
+- **Margins accept shorthand:** `40`, `[24, 40]`, `[10, 20, 30, 40]` in CSS order,
+  or `{"top": 10, "left": 20}`.
+- **`Style` and `Color` panic on an unknown name**, listing what exists. A zero
+  style renders as invisible text in the middle of a document, which is far harder
+  to trace than a stack trace on the first run. `LookupStyle` and `LookupColor` are
+  the non-panicking forms.
+- **`chart.Style.Format` is never set from a theme.** It is a function, so no JSON
+  file can supply one; assign it on the value `ChartStyle` returns.
+
+Fonts are named through `fonts.Registry`, pre-populated with the standard-14. A
+registered TrueType face becomes nameable from a theme:
+
+```go
+fonts.Default().LoadTrueType("Inter", "Inter-Regular.ttf")
+```
+
+Use `theme.WithFonts(registry)` to resolve against a specific registry rather than
+the shared one — which matters for tests, and for a server rendering with
+per-tenant fonts.
 
 ## Layout vocabulary
 
@@ -443,7 +512,7 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 ## Examples
 
 ```
-make examples     # or: make invoice / images / report / charts
+make examples     # or: make invoice / images / report / charts / themed
 ```
 
 | Example | What it covers |
@@ -452,6 +521,7 @@ make examples     # or: make invoice / images / report / charts
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
 | `examples/report` | `EveryPage` furniture, a clickable table of contents with bookmarks, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
+| `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -496,18 +566,19 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-383 tests across seven packages, at 95.0% statement coverage:
+443 tests across eight packages, at 94.8% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 182 | 181 | 99.5% |
-| `sanur` (root) | 396 | 382 | 96.5% |
+| `core` | 210 | 209 | 99.5% |
 | `elements` | 592 | 567 | 95.8% |
+| `sanur` (root) | 410 | 392 | 95.6% |
 | `internal/pdfobj` | 172 | 164 | 95.3% |
 | `render` | 505 | 473 | 93.7% |
+| `theme` | 179 | 168 | 93.9% |
 | `chart` | 480 | 449 | 93.5% |
-| `fonts` | 174 | 159 | 91.4% |
-| **Total** | **2501** | **2375** | **95.0%** |
+| `fonts` | 219 | 202 | 92.2% |
+| **Total** | **2767** | **2624** | **94.8%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's

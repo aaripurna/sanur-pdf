@@ -83,6 +83,29 @@ type Canvas interface {
 	Err() error
 }
 
+// WithoutAnchors returns a canvas that draws normally but registers no
+// destinations or outline entries.
+//
+// Headers and footers are redrawn on every sheet, so an anchor inside one would
+// register the same name once per page. A PDF destination is single-valued by
+// name, so the only coherent reading is that the first occurrence wins — but
+// registering the rest anyway trips the duplicate-name guard, and the caller gets
+// told they reused a name when they wrote exactly one.
+//
+// Links are deliberately left alone: a URL in a footer should be clickable on
+// every page, not just the first.
+func WithoutAnchors(c Canvas) Canvas { return withoutAnchors{Canvas: c} }
+
+// withoutAnchors embeds the wrapped canvas, so every method except the two it
+// overrides passes straight through and no future addition to Canvas can be
+// silently dropped here.
+type withoutAnchors struct {
+	Canvas
+}
+
+func (withoutAnchors) Destination(string, Position) {}
+func (withoutAnchors) Bookmark(string, int, string) {}
+
 // LinkTarget is where a link leads.
 //
 // A link is either external or internal, never both, so this is one struct with
