@@ -33,9 +33,20 @@ cover-html: cover
 cover-func: cover
 	go tool cover -func=coverage.out
 
-.PHONY: example
-example:
+.PHONY: examples
+examples: invoice images report
+
+.PHONY: invoice
+invoice:
 	go run ./examples/invoice invoice.pdf
+
+.PHONY: images
+images:
+	go run ./examples/images images.pdf
+
+.PHONY: report
+report:
+	go run ./examples/report report.pdf
 
 .PHONY: clean
 clean:

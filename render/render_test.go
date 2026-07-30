@@ -6,9 +6,12 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"codeberg.org/aaripurna/sanur/core"
 	"codeberg.org/aaripurna/sanur/fonts"
@@ -824,3 +827,73 @@ type stringError string
 func (e stringError) Error() string { return string(e) }
 
 func errorf(s string) error { return stringError(s) }
+
+func TestLoadImageFileReadsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.png")
+	if err := os.WriteFile(path, encodePNG(t, 30, 15, 255), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := render.LoadImageFile("explicit", path)
+	if err != nil {
+		t.Fatalf("LoadImageFile: %v", err)
+	}
+	if img.Key != "explicit" {
+		t.Errorf("key = %q, want %q", img.Key, "explicit")
+	}
+	if img.PixelWidth != 30 || img.PixelHeight != 15 {
+		t.Errorf("dimensions = %dx%d, want 30x15", img.PixelWidth, img.PixelHeight)
+	}
+}
+
+func TestLoadImageFileDefaultsKeyToPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.png")
+	if err := os.WriteFile(path, encodePNG(t, 10, 10, 255), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := render.LoadImageFile("", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The key is what pools the image across the document, so defaulting it to
+	// the path means loading the same file twice costs its bytes once.
+	if img.Key != path {
+		t.Errorf("key = %q, want the path %q", img.Key, path)
+	}
+}
+
+func TestLoadImageFileReportsAMissingFile(t *testing.T) {
+	if _, err := render.LoadImageFile("absent", "/no/such/image.png"); err == nil {
+		t.Error("expected an error for a missing file")
+	}
+}
+
+func TestLoadImageFSReadsFromAFilesystem(t *testing.T) {
+	fsys := fstest.MapFS{
+		"art/logo.png": &fstest.MapFile{Data: encodePNG(t, 24, 12, 255)},
+	}
+
+	img, err := render.LoadImageFS(fsys, "logo", "art/logo.png")
+	if err != nil {
+		t.Fatalf("LoadImageFS: %v", err)
+	}
+	if img.PixelWidth != 24 || img.PixelHeight != 12 {
+		t.Errorf("dimensions = %dx%d, want 24x12", img.PixelWidth, img.PixelHeight)
+	}
+
+	// An empty key falls back to the name within the filesystem.
+	named, err := render.LoadImageFS(fsys, "", "art/logo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.Key != "art/logo.png" {
+		t.Errorf("key = %q, want %q", named.Key, "art/logo.png")
+	}
+
+	if _, err := render.LoadImageFS(fsys, "gone", "art/missing.png"); err == nil {
+		t.Error("expected an error for a name not in the filesystem")
+	}
+}

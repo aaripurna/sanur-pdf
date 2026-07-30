@@ -138,18 +138,34 @@ func (r *Row) Measure(available core.Size) core.SpacePlan {
 		return core.Wrap("row items need more than the available width %.1f", available.Width)
 	}
 
+	// The row's height comes from what its cells need, not from what they would
+	// accept. Asking a vertically centred cell to measure directly would have it
+	// claim the whole page, since filling the offered space is precisely what
+	// alignment does, and the row would inherit that.
 	var height float64
-	anyPartial := false
-
 	for i, item := range r.Items {
-		plan := core.MeasureChild(item.Element, core.Size{
+		natural := core.NaturalSizeOf(item.Element, core.Size{
 			Width:  widths[i],
 			Height: available.Height,
 		})
-		if plan.Wrapped() {
+		if natural.Wrapped() {
 			// A row is atomic across its width: there is no way to place some
 			// cells and defer others without leaving a hole, so one cell that
 			// cannot fit sends the whole row to the next page.
+			return core.Wrap("row item %d does not fit: %s", i, natural.WrapReason)
+		}
+		height = math.Max(height, natural.Size.Height)
+	}
+
+	// With the height settled, every cell is measured against the real box so
+	// alignment and extension resolve against it.
+	anyPartial := false
+	for i, item := range r.Items {
+		plan := core.MeasureChild(item.Element, core.Size{
+			Width:  widths[i],
+			Height: height,
+		})
+		if plan.Wrapped() {
 			return core.Wrap("row item %d does not fit: %s", i, plan.WrapReason)
 		}
 		height = math.Max(height, plan.Size.Height)
@@ -163,6 +179,33 @@ func (r *Row) Measure(available core.Size) core.SpacePlan {
 		return core.PartialRender(size)
 	}
 	return core.FullRender(size)
+}
+
+// NaturalSize reports the height the tallest cell's content needs, so that a row
+// nested inside another row's cell sizes correctly.
+func (r *Row) NaturalSize(available core.Size) core.SpacePlan {
+	if len(r.Items) == 0 {
+		return core.EmptyRender()
+	}
+
+	widths, ok := r.resolveWidths(available)
+	if !ok {
+		return core.Wrap("row items need more than the available width %.1f", available.Width)
+	}
+
+	var height float64
+	for i, item := range r.Items {
+		natural := core.NaturalSizeOf(item.Element, core.Size{
+			Width:  widths[i],
+			Height: available.Height,
+		})
+		if natural.Wrapped() {
+			return natural
+		}
+		height = math.Max(height, natural.Size.Height)
+	}
+
+	return core.FullRender(core.Size{Width: available.Width, Height: height})
 }
 
 func (r *Row) Draw(canvas core.Canvas, available core.Size) {

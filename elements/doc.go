@@ -27,6 +27,20 @@
 // wrong size. Elements that track progress across pages — text, columns, page
 // breaks — therefore advance that progress in Draw and never in Measure.
 //
+// The third rule concerns elements that fill the space they are offered. A row
+// must know its own height before it can align anything within it, but it can
+// only learn that from its children — and a vertically centred child answers
+// Measure with the whole height available, because filling the offered space is
+// what centring means. Asking directly would make every row as tall as the page.
+//
+// core.CrossAxisNatural breaks the circularity. An element that expands
+// implements NaturalSize to report what its content actually needs, and a row
+// resolves its height from those answers before measuring again against the real
+// box. Every pass-through decorator — padding, background, border, constraint,
+// column, row — must forward the query, because a row cell is rarely a bare
+// aligned element; it is far more often a background wrapping padding wrapping
+// the alignment. One link answering with Measure reintroduces the bug.
+//
 // # Pagination
 //
 // An element that cannot fit everything it holds returns a partial render: it

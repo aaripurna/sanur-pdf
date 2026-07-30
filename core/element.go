@@ -39,6 +39,33 @@ type StateResettable interface {
 	ResetState(hard bool)
 }
 
+// CrossAxisNatural is implemented by elements that would otherwise expand to
+// fill whatever space they are offered, to report the size their content
+// actually needs.
+//
+// A row has to decide how tall it is before it can align anything inside it, and
+// it can only learn that from its children. But an element that centres itself
+// vertically answers Measure with the full height on offer — that is what
+// centring means — so asking it directly would make every row as tall as the
+// page. This interface breaks the circularity: the row asks for natural sizes to
+// fix its own height, then measures again at that height so the alignment
+// resolves against a real box.
+type CrossAxisNatural interface {
+	NaturalSize(available Size) SpacePlan
+}
+
+// NaturalSizeOf reports an element's content size, falling back to Measure for
+// elements that do not expand and therefore already answer with it.
+func NaturalSizeOf(e Element, available Size) SpacePlan {
+	if e == nil {
+		return EmptyRender()
+	}
+	if n, ok := e.(CrossAxisNatural); ok {
+		return n.NaturalSize(available)
+	}
+	return e.Measure(available)
+}
+
 // ContextAware is implemented by elements whose content depends on where they
 // land in the finished document, such as a page-number label.
 type ContextAware interface {

@@ -37,6 +37,21 @@ func FixedSize(w, h float64, child core.Element) *Constrained {
 }
 
 func (c *Constrained) Measure(available core.Size) core.SpacePlan {
+	return c.resolve(available, core.MeasureChild)
+}
+
+// NaturalSize applies the same bounds, but asks the child for its natural size so
+// the query composes through a constraint.
+func (c *Constrained) NaturalSize(available core.Size) core.SpacePlan {
+	return c.resolve(available, core.NaturalSizeOf)
+}
+
+// resolve holds the bounding logic shared by Measure and NaturalSize; they differ
+// only in how they interrogate the child.
+func (c *Constrained) resolve(
+	available core.Size,
+	measure func(core.Element, core.Size) core.SpacePlan,
+) core.SpacePlan {
 	// A minimum larger than what the parent has is unsatisfiable here, but may
 	// be satisfiable on an emptier page, so it wraps rather than erroring.
 	if c.MinWidth > available.Width+core.Epsilon {
@@ -50,7 +65,7 @@ func (c *Constrained) Measure(available core.Size) core.SpacePlan {
 
 	inner := c.innerSpace(available)
 
-	plan := core.MeasureChild(c.Child, inner)
+	plan := measure(c.Child, inner)
 	if plan.Wrapped() {
 		return plan
 	}
@@ -139,6 +154,12 @@ func (e *Extend) Measure(available core.Size) core.SpacePlan {
 	return core.SpacePlan{Type: plan.Type, Size: size}
 }
 
+// NaturalSize reports the child's own size, ignoring this element's tendency to
+// fill, so a row can size itself around an extending cell.
+func (e *Extend) NaturalSize(available core.Size) core.SpacePlan {
+	return core.MeasureChild(e.Child, available)
+}
+
 func (e *Extend) Draw(canvas core.Canvas, available core.Size) {
 	if e.Child == nil {
 		return
@@ -184,6 +205,11 @@ func (a *Aligned) Measure(available core.Size) core.SpacePlan {
 		size.Height = available.Height
 	}
 	return core.SpacePlan{Type: plan.Type, Size: size}
+}
+
+// NaturalSize reports the child's own size, before alignment expands the box.
+func (a *Aligned) NaturalSize(available core.Size) core.SpacePlan {
+	return core.MeasureChild(a.Child, available)
 }
 
 func (a *Aligned) Draw(canvas core.Canvas, available core.Size) {

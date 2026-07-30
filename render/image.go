@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/jpeg"
 	_ "image/png" // registers the PNG decoder used by DecodeImage
+	"io/fs"
+	"os"
 
 	"codeberg.org/aaripurna/sanur/core"
 	"codeberg.org/aaripurna/sanur/internal/pdfobj"
@@ -39,6 +41,36 @@ func DecodeImage(key string, data []byte) (core.Image, error) {
 		PixelWidth:  cfg.Width,
 		PixelHeight: cfg.Height,
 	}, nil
+}
+
+// LoadImageFile reads and prepares an image from disk, naming it after the file
+// if key is empty.
+//
+// The key is what deduplicates the image across the document, so it matters that
+// two loads of the same picture agree on it. Defaulting to the path means the
+// obvious usage — loading a logo once per page — costs its bytes once.
+func LoadImageFile(key, path string) (core.Image, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return core.Image{}, fmt.Errorf("sanur/render: reading image %s: %w", path, err)
+	}
+	if key == "" {
+		key = path
+	}
+	return DecodeImage(key, data)
+}
+
+// LoadImageFS reads an image from a filesystem, which is how an embedded asset
+// declared with //go:embed is loaded.
+func LoadImageFS(fsys fs.FS, key, name string) (core.Image, error) {
+	data, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		return core.Image{}, fmt.Errorf("sanur/render: reading image %s: %w", name, err)
+	}
+	if key == "" {
+		key = name
+	}
+	return DecodeImage(key, data)
 }
 
 // imageResource registers an image and returns its XObject resource name.

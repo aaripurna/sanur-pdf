@@ -22,6 +22,18 @@ func (c *Container) Measure(available core.Size) core.SpacePlan {
 	return core.MeasureChild(c.Child, available)
 }
 
+// NaturalSize forwards the query so a row can size itself around whatever ends
+// up in this slot.
+//
+// Every pass-through decorator has to forward this. A row asks its cells for
+// their natural size, and a cell is rarely a bare aligned element — it is far
+// more often a background wrapping padding wrapping the alignment. If any link in
+// that chain answered with Measure instead, the vertically greedy element beneath
+// would claim the whole page and take the row with it.
+func (c *Container) NaturalSize(available core.Size) core.SpacePlan {
+	return core.NaturalSizeOf(c.Child, available)
+}
+
 func (c *Container) Draw(canvas core.Canvas, available core.Size) {
 	core.DrawChild(c.Child, canvas, available)
 }
@@ -53,6 +65,15 @@ func (s *ShowIf) Measure(available core.Size) core.SpacePlan {
 		return core.EmptyRender()
 	}
 	return core.MeasureChild(s.Child, available)
+}
+
+// NaturalSize reports nothing while hidden, and the child's natural size
+// otherwise.
+func (s *ShowIf) NaturalSize(available core.Size) core.SpacePlan {
+	if !s.Condition {
+		return core.EmptyRender()
+	}
+	return core.NaturalSizeOf(s.Child, available)
 }
 
 func (s *ShowIf) Draw(canvas core.Canvas, available core.Size) {

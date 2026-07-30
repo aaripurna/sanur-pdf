@@ -1,6 +1,10 @@
 package elements
 
-import "codeberg.org/aaripurna/sanur/core"
+import (
+	"math"
+
+	"codeberg.org/aaripurna/sanur/core"
+)
 
 // Background paints a filled rectangle behind its child.
 //
@@ -16,6 +20,12 @@ type Background struct {
 
 func (b *Background) Measure(available core.Size) core.SpacePlan {
 	return core.MeasureChild(b.Child, available)
+}
+
+// NaturalSize forwards the query, since a background adds nothing to its child's
+// size.
+func (b *Background) NaturalSize(available core.Size) core.SpacePlan {
+	return core.NaturalSizeOf(b.Child, available)
 }
 
 func (b *Background) Draw(canvas core.Canvas, available core.Size) {
@@ -68,6 +78,12 @@ func (b *Border) Measure(available core.Size) core.SpacePlan {
 	return core.MeasureChild(b.Child, available)
 }
 
+// NaturalSize forwards the query, since a border is drawn on top of its child
+// rather than around it.
+func (b *Border) NaturalSize(available core.Size) core.SpacePlan {
+	return core.NaturalSizeOf(b.Child, available)
+}
+
 func (b *Border) Draw(canvas core.Canvas, available core.Size) {
 	core.DrawChild(b.Child, canvas, available)
 
@@ -106,27 +122,92 @@ func (b *Border) Children() []core.Element {
 	return []core.Element{b.Child}
 }
 
-// Clip confines its child's drawing to the allocated box.
+// Clip crops its child to the box, letting it overflow rather than wrap.
 //
-// Measurement is unaffected: the child still reports whatever size it wants, and
-// clipping only stops the overflow from being painted. That makes it the tool for
-// content of unknown length in a fixed-size box, where the alternative would be
-// letting it spill over whatever follows.
+// This is the element that makes cropping possible. Most elements refuse space
+// they cannot fit into — an image reports a wrap, because there is no sensible
+// way to render two thirds of a photograph — which means simply putting one in a
+// small box fails the layout instead of trimming it. Clip measures its child
+// against unbounded space so the child answers with its natural size, then
+// reports only what the parent offered and hides the remainder.
+//
+// A clipped region never paginates: partial renders from the child are absorbed
+// into a full render, since content hidden by a crop is meant to be discarded
+// rather than continued on the next page.
 type Clip struct {
 	Child core.Element
 }
 
+// measureChild asks the child for its natural size.
+//
+// The width is offered as given on the first attempt so that text still wraps to
+// the column and width-fitted images still scale to it — unbounding both axes
+// would turn every paragraph into one endless line. Only content that cannot
+// even fit the width, such as an unscaled image wider than its box, is measured
+// against unlimited space so it can be cropped horizontally too.
+func (c *Clip) measureChild(available core.Size) core.SpacePlan {
+	if c.Child == nil {
+		return core.EmptyRender()
+	}
+
+	plan := c.Child.Measure(core.Size{Width: available.Width, Height: core.Infinity})
+	if !plan.Wrapped() {
+		return plan
+	}
+	return c.Child.Measure(core.Size{Width: core.Infinity, Height: core.Infinity})
+}
+
+// contentSize is the size the child is drawn at: its natural size, with any axis
+// it merely filled replaced by the box's own extent.
+//
+// A child that stretches to whatever it is offered — a stretched image, an
+// Extend — answers the unbounded probe with the probe value itself. Drawing at
+// that size would emit a transform scaled by a billion, which is both meaningless
+// and rejected by readers. Such an axis has no natural size and therefore nothing
+// to crop, so the box's extent is used instead.
+func (c *Clip) contentSize(available core.Size) (core.SpacePlan, core.Size) {
+	plan := c.measureChild(available)
+	if plan.Wrapped() {
+		return plan, core.Size{}
+	}
+
+	size := plan.Size
+	if size.Width >= core.Infinity {
+		size.Width = available.Width
+	}
+	if size.Height >= core.Infinity {
+		size.Height = available.Height
+	}
+	return plan, size
+}
+
 func (c *Clip) Measure(available core.Size) core.SpacePlan {
-	return core.MeasureChild(c.Child, available)
+	plan, size := c.contentSize(available)
+	if plan.Wrapped() {
+		return plan
+	}
+
+	// Never claim more than was offered: the overflow is hidden, not laid out.
+	return core.FullRender(core.Size{
+		Width:  math.Min(size.Width, available.Width),
+		Height: math.Min(size.Height, available.Height),
+	})
 }
 
 func (c *Clip) Draw(canvas core.Canvas, available core.Size) {
 	if c.Child == nil {
 		return
 	}
+	// The child is drawn at its natural size so that what falls outside the box
+	// is genuinely cropped rather than scaled to fit.
+	plan, size := c.contentSize(available)
+	if plan.Wrapped() {
+		return
+	}
+
 	canvas.Save()
 	canvas.ClipRect(core.Position{}, available)
-	c.Child.Draw(canvas, available)
+	c.Child.Draw(canvas, size)
 	canvas.Restore()
 }
 

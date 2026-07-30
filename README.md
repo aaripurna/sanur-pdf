@@ -69,6 +69,14 @@ Two rules keep the tree predictable, and custom elements need to honour them:
   whose answer changed in between would draw into a box of the wrong size.
   Elements that track progress across pages advance it in `Draw`, never in
   `Measure`.
+- **Elements that fill report a natural size separately.** A row must know its
+  height before it can align anything inside it, but a vertically centred child
+  answers `Measure` with the whole height on offer — that is what centring means.
+  Such elements implement `core.CrossAxisNatural` to report what their content
+  needs, and a row resolves its height from those answers first. Every
+  pass-through decorator forwards the query, since a row cell is usually a
+  background wrapping padding wrapping the alignment rather than a bare aligned
+  element.
 
 ## Packages
 
@@ -192,16 +200,63 @@ rather than silently missing. Other scripts need a TrueType font.
 
 ## Images
 
-JPEGs are embedded byte-for-byte via `DCTDecode`, so no quality is lost. PNGs are
-decoded to RGB, with any transparency emitted as a separate soft mask. Identical
-images are pooled by key, so a logo in a footer costs its bytes once.
+Loading is separate from layout. The fluent API cannot fail, so reading a file
+happens first, where the error can be handled; the resulting `core.Image` is then
+handed to as many `.Image()` calls as you like.
 
 ```go
-img, err := render.DecodeImage("logo", data)
+// From a path
+img, err := render.LoadImageFile("photo", "assets/photo.jpg")
+
+// From bytes you already hold — //go:embed, an HTTP body, a database blob
+img, err := render.DecodeImage("logo", logoBytes)
+
+// From any fs.FS, including an embed.FS
+img, err := render.LoadImageFS(assets, "logo", "assets/logo.png")
+
+// From an image.Image you generated
+img, err := render.EncodeJPEG("chart", rendered, 85)
+
 c.Item().Width(120).Image(img)
 ```
 
+JPEGs are embedded byte-for-byte via `DCTDecode`, so no quality is lost. PNGs are
+decoded to RGB, with any transparency emitted as a separate soft mask, because PDF
+image samples carry no alpha channel. Images are pooled by key, so a logo repeated
+in a footer costs its bytes once — which makes the key worth setting deliberately
+when the same picture is loaded twice.
+
 Fit modes: `FitWidth` (default), `FitArea`, `FitStretch`, `FitUnscaled`.
+
+An image refuses a box it cannot fit rather than overflowing, since rendering two
+thirds of a photograph is not meaningful. To crop instead, wrap it in `Clip`,
+which measures its child against unbounded space and hides the excess:
+
+```go
+c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
+```
+
+## Examples
+
+```
+make examples     # or: make invoice / make images / make report
+```
+
+| Example | What it covers |
+| --- | --- |
+| `examples/invoice` | Tables that paginate, repeated header and footer, page numbering, right-aligned currency |
+| `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
+| `examples/report` | Stat tiles, bar charts and sparklines built from primitives, justified two-column prose, mixed portrait and landscape sheets |
+
+The report example is the one to read for complex layout. There is no chart
+element, no stat-tile element and no sidebar element in sanur, and it shows why
+none are needed: each is a short composition of rows, columns, backgrounds and
+lines. It also includes a `sparkline` implementing `core.Element` directly, for the
+case where composition genuinely runs out — a polyline through arbitrary points
+cannot be expressed as nested boxes.
+
+All three are executed by the test suite and checked with Ghostscript, so they
+cannot silently rot.
 
 ## Page numbering
 
@@ -236,17 +291,17 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-233 tests across six packages, at 96.1% statement coverage:
+255 tests across six packages, at 95.6% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 97 | 97 | 100.0% |
-| `elements` | 489 | 481 | 98.4% |
+| `core` | 102 | 102 | 100.0% |
+| `elements` | 554 | 535 | 96.6% |
 | `sanur` (root) | 373 | 359 | 96.2% |
 | `internal/pdfobj` | 157 | 149 | 94.9% |
-| `render` | 260 | 245 | 94.2% |
+| `render` | 272 | 257 | 94.5% |
 | `fonts` | 174 | 159 | 91.4% |
-| **Total** | **1550** | **1490** | **96.1%** |
+| **Total** | **1632** | **1561** | **95.6%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -268,9 +323,15 @@ What the suite checks, and why in that particular way:
 - **Font metrics** are spot-checked against the published Adobe values, and the
   WinAnsi encoding is round-tripped over the 0x80–0x9F block where it diverges
   from Latin-1.
+- **Cross-axis resolution** is pinned per decorator. A row whose height came from
+  a vertically centred cell would silently become page-tall — the layout still
+  succeeds, it just looks wrong — so each `NaturalSize` forward is tested on its
+  own.
 - **Real interpreters** parse the output. Ghostscript and `pdftotext` run where
   installed, which is the only way to catch a structurally plausible file that no
   reader will actually open, and to confirm the text is text rather than shapes.
+- **The examples themselves** are compiled, run and Ghostscript-checked, including
+  an assertion that no glyph was substituted with a question mark.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
 

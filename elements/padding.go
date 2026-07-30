@@ -46,6 +46,24 @@ func (p *Padding) Measure(available core.Size) core.SpacePlan {
 	return core.SpacePlan{Type: plan.Type, Size: size}
 }
 
+// NaturalSize forwards the query, adding the insets to whatever the child needs.
+func (p *Padding) NaturalSize(available core.Size) core.SpacePlan {
+	if available.Width-p.horizontal() < -core.Epsilon ||
+		available.Height-p.vertical() < -core.Epsilon {
+		return core.Wrap("padding of %.1fx%.1f exceeds the available %.1fx%.1f",
+			p.horizontal(), p.vertical(), available.Width, available.Height)
+	}
+
+	plan := core.NaturalSizeOf(p.Child, available.Shrink(p.horizontal(), p.vertical()))
+	if plan.Wrapped() {
+		return plan
+	}
+	return core.SpacePlan{
+		Type: plan.Type,
+		Size: plan.Size.Grow(p.horizontal(), p.vertical()),
+	}
+}
+
 func (p *Padding) Draw(canvas core.Canvas, available core.Size) {
 	if p.Child == nil {
 		return

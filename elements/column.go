@@ -76,6 +76,37 @@ func (c *Column) Measure(available core.Size) core.SpacePlan {
 	return core.FullRender(core.Size{Width: available.Width, Height: used})
 }
 
+// NaturalSize reports the height the column's remaining items need, ignoring
+// pagination.
+//
+// This is a pure "how tall is my content" query, so it has none of Measure's
+// page-breaking logic: nothing stops early, and no partial render is produced. A
+// row containing a column of cells needs the whole answer to size itself, not the
+// part that happens to fit the current page.
+func (c *Column) NaturalSize(available core.Size) core.SpacePlan {
+	if c.rendered >= len(c.Items) {
+		return core.EmptyRender()
+	}
+
+	var used float64
+	for i := c.rendered; i < len(c.Items); i++ {
+		if i > c.rendered {
+			used += c.Spacing
+		}
+
+		plan := core.NaturalSizeOf(c.Items[i], core.Size{
+			Width:  available.Width,
+			Height: available.Height,
+		})
+		if plan.Wrapped() {
+			return plan
+		}
+		used += plan.Size.Height
+	}
+
+	return core.FullRender(core.Size{Width: available.Width, Height: used})
+}
+
 // partial reports a column that filled height points of the page and has items
 // left over.
 func (c *Column) partial(available core.Size, height float64) core.SpacePlan {
