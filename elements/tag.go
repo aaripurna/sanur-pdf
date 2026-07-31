@@ -19,11 +19,6 @@ type Tagged struct {
 	Child core.Element
 }
 
-// NewTagged wraps a child in a structure element.
-func NewTagged(role core.Role, child core.Element) *Tagged {
-	return &Tagged{Mark: core.Mark{Role: role}, Child: child}
-}
-
 func (t *Tagged) Measure(available core.Size) core.SpacePlan {
 	return core.MeasureChild(t.Child, available)
 }
@@ -47,47 +42,7 @@ func (t *Tagged) Children() []core.Element {
 	return []core.Element{t.Child}
 }
 
-// Artifact marks its child as carrying no meaning: a rule, a background, a running
-// header, a decorative flourish.
-//
-// Marking these matters as much as tagging the content. A conforming tagged document has
-// no third category — anything not marked as an artifact is content a reader must
-// announce, and a horizontal rule announced between every paragraph makes a document
-// worse than an untagged one.
-type Artifact struct {
-	Child core.Element
-}
-
-// NewArtifact marks a child as decoration.
-func NewArtifact(child core.Element) *Artifact {
-	return &Artifact{Child: child}
-}
-
-func (a *Artifact) Measure(available core.Size) core.SpacePlan {
-	return core.MeasureChild(a.Child, available)
-}
-
-func (a *Artifact) NaturalSize(available core.Size) core.SpacePlan {
-	return core.NaturalSizeOf(a.Child, available)
-}
-
-func (a *Artifact) Draw(canvas core.Canvas, available core.Size) {
-	canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
-	defer canvas.EndMarked()
-
-	core.DrawChild(a.Child, canvas, available)
-}
-
-func (a *Artifact) Children() []core.Element {
-	if a.Child == nil {
-		return nil
-	}
-	return []core.Element{a.Child}
-}
-
 var (
 	_ core.Element   = (*Tagged)(nil)
 	_ core.Composite = (*Tagged)(nil)
-	_ core.Element   = (*Artifact)(nil)
-	_ core.Composite = (*Artifact)(nil)
 )

@@ -783,7 +783,7 @@ make examples     # or: make invoice / images / report / charts / themed
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
-| `examples/accessible` | A tagged document: declared headings, a described figure, a table with real header cells, and furniture marked as decoration |
+| `examples/accessible` | A PDF/UA-1 conformant document: declared headings, a described figure, a table with real header cells, furniture marked as decoration, and an embedded font because conformance requires one |
 | `examples/concurrent` | 64 invoices generated in parallel from one shared theme, compared byte for byte against the same 64 generated one at a time |
 | `examples/scripts` | Twenty languages from one registered font — including Hebrew, Arabic, Persian and Urdu — subsetted 20× smaller than the files it came from, with the same text in a built-in font for comparison |
 
@@ -852,21 +852,39 @@ document that passes for accessible:
 are exported for the cases that need spelling out — `sanur.Quote`, `sanur.Caption`,
 `sanur.TableHeader` and the rest.
 
+**The output is PDF/UA-1 conformant**, and the test suite says so by handing the document
+to veraPDF — the reference validator — rather than by asserting that sanur wrote what it
+meant to. All 106 rules pass.
+
+That check earned its place immediately. The hand-written structural tests were thorough
+and passed while the document failed 6 rules and 78 checks. What they could not see:
+
+- The topmost structure element had no `/P`. Software walks that link upward to establish
+  that a piece of content sits in the tree at all, so **every tagged sequence in the
+  document read as untagged** — 72 of the 78 failures, from one missing entry.
+- Marked content nested inside other marked content, leaving no answer to which element
+  owns the ink. Sequences are now opened lazily, on the first drawing operation that needs
+  one, so the innermost element always owns it and nothing nests.
+- Decoration drawn by `Background` and `Border` sat outside any sequence at all.
+- No XMP identifier, so the file never claimed conformance.
+- Header cells with no `/Scope`, so a reader knows a cell is a heading but not what it heads.
+- Link annotations reachable from the structure but not back to it.
+
+One finding could not be fixed, only reported: **a conforming document embeds every font it
+uses**, and the built-in faces have no program to embed. A tagged document using them is
+refused, with a message saying to register a font.
+
 ### What it does not cover
 
-- **Tagging is not conformance.** A document can carry a flawless structure and still fail
-  on contrast, or on colour used as the only way to tell two things apart. A layout engine
+- **Tagging is not conformance for a reader.** A document can validate and still fail on
+  contrast, or on colour used as the only way to tell two things apart. A layout engine
   cannot judge either.
 - **A paragraph split across a page break becomes two structure elements**, so a reader
   announces two paragraphs rather than one.
 - **Form fields, notes and highlights are absent**, so a tagged document cannot yet
   contain an accessible form.
-- **Mirroring under rule L4** covers paired brackets rather than the whole
-  `Bidi_Mirrored` property, and the explicit bidirectional controls are ignored.
-- **There is no conformance checker in the suite.** veraPDF is the validator for PDF/UA and
-  it is not a Go program, so the structure is verified by reading the object graph back
-  instead: the tree's shape, and every marked sequence reachable from the parent tree with
-  the role the stream used.
+- **Lists are not built for you.** The roles are exported, so a list can be tagged with
+  `Tag`, but there is no list builder that does it automatically.
 
 ## Concurrency
 
@@ -935,20 +953,20 @@ because they are not interchangeable: which fonts a runner has decides which che
 run, and `make skipped` reports what did not into the run summary rather than letting a
 green tick stand for less than it appears to.
 
-636 tests across the nine library packages, at 94.8% statement coverage (the build tooling has its own tests and is measured separately):
+640 tests across the nine library packages, at 95.0% statement coverage (the build tooling has its own tests and is measured separately):
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
+| `core` | 288 | 283 | 98.3% |
 | `text` | 359 | 349 | 97.2% |
-| `core` | 291 | 281 | 96.6% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `sanur` (root) | 505 | 483 | 95.6% |
+| `sanur` (root) | 507 | 485 | 95.7% |
+| `elements` | 740 | 706 | 95.4% |
 | `fonts` | 502 | 474 | 94.4% |
-| `elements` | 746 | 702 | 94.1% |
-| `render` | 746 | 701 | 94.0% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
-| **Total** | **3993** | **3784** | **94.8%** |
+| `render` | 814 | 760 | 93.4% |
+| **Total** | **4054** | **3851** | **95.0%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -1016,12 +1034,11 @@ What the suite checks, and why in that particular way:
   reader will actually open, and to confirm the text is text rather than shapes.
 - **The examples themselves** are compiled, run and Ghostscript-checked, including
   an assertion that no glyph was substituted with a question mark.
-- **The structure of a tagged document is read back, not grepped for.** A tree that is
-  present but wrong — an MCID pointing at the neighbouring paragraph, a parent tree with a
-  hole in it — renders identically to a correct one and is believed by the software that
-  consumes it. So the tests walk the object graph and check that every marked sequence is
-  reachable from the parent tree under the role the content stream used. Reversing that
-  array, or sharing the sequence counter across pages, both fail.
+- **Tagged output is validated by veraPDF**, the PDF/UA reference implementation, and the
+  structure is *also* read back out of the object graph. Both are needed and neither
+  suffices: the hand-written tests passed while the document failed six conformance rules,
+  and they are what pin the behaviour a validator does not describe — that reversing the
+  parent-tree array, or sharing the sequence counter across pages, is a failure.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
 - **The concurrency promise is tested rather than asserted.** Sixteen documents are

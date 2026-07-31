@@ -29,11 +29,17 @@ func (b *Background) NaturalSize(available core.Size) core.SpacePlan {
 }
 
 func (b *Background) Draw(canvas core.Canvas, available core.Size) {
+	// Only the fill is decoration, not what sits on it, so the artifact scope closes before
+	// the child draws. Wrapping the child too would tell a reader the content is decoration
+	// and it would skip a banded table row entirely.
+	canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
 	if b.Radius > 0 {
 		canvas.DrawRoundedRect(core.Position{}, available, b.Radius, b.Color)
 	} else {
 		canvas.DrawRect(core.Position{}, available, b.Color)
 	}
+	canvas.EndMarked()
+
 	core.DrawChild(b.Child, canvas, available)
 }
 
@@ -86,6 +92,11 @@ func (b *Border) NaturalSize(available core.Size) core.SpacePlan {
 
 func (b *Border) Draw(canvas core.Canvas, available core.Size) {
 	core.DrawChild(b.Child, canvas, available)
+
+	// The edges are decoration; the child above is not, which is why the scope opens only
+	// now. A rule announced around every table row is worse than no tagging at all.
+	canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
+	defer canvas.EndMarked()
 
 	w, h := available.Width, available.Height
 

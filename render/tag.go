@@ -72,6 +72,14 @@ type tagState struct {
 	// by MCID. This becomes the parent tree.
 	parents map[int][]*structElem
 
+	// annotationOwners maps a parent-tree key to the element owning an annotation.
+	//
+	// An annotation needs the same two-way link a piece of content does. The structure
+	// reaches the annotation through an object reference; the annotation reaches the
+	// structure through a key into this tree, and software validates the second
+	// direction — a link with only the first is reported as untagged.
+	annotationOwners map[int]*structElem
+
 	// headings records the heading levels used, in order, so a document that skips
 	// from H1 to H3 can be reported rather than shipped.
 	headings []int
@@ -82,23 +90,30 @@ type tagState struct {
 
 func newTagState() *tagState {
 	return &tagState{
-		mcidByPage: map[int]int{},
-		parents:    map[int][]*structElem{},
+		mcidByPage:       map[int]int{},
+		parents:          map[int][]*structElem{},
+		annotationOwners: map[int]*structElem{},
 	}
 }
 
-// begin opens a structure element. Returns the MCID to put in the content stream, and
-// whether the caller should emit a marked-content sequence at all.
-func (t *tagState) begin(mark core.Mark, page int) (mcid int, marked bool) {
+// push opens a structure element, returning it — or nil for an artifact, which carries no
+// structure and never enters the tree.
+//
+// No marked-content identifier is allocated here. Whether an element owns any ink is not
+// known when it opens: a table cell holding a paragraph owns none, and the paragraph owns
+// it all. Allocating eagerly produced a sequence nested inside another, and a reader
+// cannot tell which of the two owns the content — veraPDF reports such content as neither
+// tagged nor artifact, which is to say invisible. So the identifier is allocated on the
+// first drawing operation that actually needs one, and an element that draws nothing
+// directly simply becomes a grouping element.
+func (t *tagState) push(mark core.Mark) *structElem {
 	if !t.enabled {
-		return 0, false
+		return nil
 	}
 
-	// An artifact carries no structure: it is marked in the stream so that a reader
-	// knows to ignore it, and it never enters the tree.
 	if mark.Role == core.RoleArtifact || mark.Role == core.RoleNone {
 		t.stack = append(t.stack, nil)
-		return 0, true
+		return nil
 	}
 
 	if level := mark.Role.HeadingLevel(); level > 0 {
@@ -124,25 +139,35 @@ func (t *tagState) begin(mark core.Mark, page int) (mcid int, marked bool) {
 	parent.children = append(parent.children, elem)
 	t.stack = append(t.stack, elem)
 
-	// A grouping element holds other elements rather than content, so it owns no
-	// marked-content sequence and needs no MCID.
-	if mark.Role.Grouping() {
-		return 0, false
-	}
+	return elem
+}
 
-	mcid = t.mcidByPage[page]
+// allocate reserves a marked-content identifier for an element on a page.
+//
+// An element may allocate more than once: content, then a nested child, then more content
+// leaves it owning two sequences, which is what /K holding an array is for.
+func (t *tagState) allocate(elem *structElem, page int) int {
+	mcid := t.mcidByPage[page]
 	t.mcidByPage[page] = mcid + 1
 
 	elem.content = append(elem.content, contentRef{page: page, mcid: mcid})
 
-	// The parent tree is indexed by MCID, so the slot has to exist even before the
+	// The parent tree is indexed by identifier, so the slot has to exist even before the
 	// element that fills it is known.
 	for len(t.parents[page]) <= mcid {
 		t.parents[page] = append(t.parents[page], nil)
 	}
 	t.parents[page][mcid] = elem
 
-	return mcid, true
+	return mcid
+}
+
+// pop closes the most recently opened element.
+func (t *tagState) pop() {
+	if !t.enabled || len(t.stack) == 0 {
+		return
+	}
+	t.stack = t.stack[:len(t.stack)-1]
 }
 
 // current returns the innermost open structure element, or nil when nothing is open or
@@ -163,23 +188,18 @@ func (t *tagState) current() *structElem {
 	return nil
 }
 
-// end closes the most recently opened element.
-func (t *tagState) end() {
-	if !t.enabled || len(t.stack) == 0 {
-		return
-	}
-	t.stack = t.stack[:len(t.stack)-1]
-}
-
-// artifactDepth reports whether anything currently open is an artifact, so that content
-// drawn inside a running header is not tagged even if the element asks.
+// insideArtifact reports whether the innermost open element is an artifact, so that
+// content drawn inside a running header is decoration even if the element asks otherwise.
+//
+// The innermost decides, rather than anything in the stack. That is what lets a link
+// inside a running footer be a link: a conforming document requires every link annotation
+// to sit inside a Link element, so the link escapes the artifact around it, and the text
+// inside the link is then content again rather than decoration.
 func (t *tagState) insideArtifact() bool {
-	for _, elem := range t.stack {
-		if elem == nil {
-			return true
-		}
+	if len(t.stack) == 0 {
+		return false
 	}
-	return false
+	return t.stack[len(t.stack)-1] == nil
 }
 
 // headingProblems reports heading levels that skip.
@@ -227,23 +247,33 @@ func (b *Builder) emitStructure(pageRefs []pdfobj.Ref) (pdfobj.Ref, error) {
 				"as decoration with Decoration", subject, advice, advice)
 	}
 
-	// Every element's number is reserved before any is written, because a child
-	// records its parent and a parent records its children.
+	// Every element's number is reserved before any is written, because a child records
+	// its parent and a parent records its children — and the tree's own root has to be
+	// reserved first, since the topmost element names it as its parent.
+	//
+	// That /P is not optional. Every structure element requires one, and software walks
+	// it upwards to establish that a piece of content sits in the tree at all: with the
+	// topmost element's parent missing, veraPDF reported every tagged sequence in the
+	// document as untagged, because the walk from the content ran out before reaching
+	// the root.
+	rootRef := b.writer.Reserve()
+
 	tags.root.ref = b.writer.Reserve()
 	reserveRefs(b.writer, tags.root)
 
 	parentTreeRef := b.emitParentTree(tags, pageRefs)
 
-	if err := b.writeStructElem(tags.root, pageRefs); err != nil {
+	if err := b.writeStructElem(tags.root, pageRefs, rootRef); err != nil {
 		return 0, err
 	}
 
-	root := pdfobj.NewDict().
+	b.writer.Put(rootRef, pdfobj.NewDict().
 		SetName("Type", "StructTreeRoot").
 		Set("K", pdfobj.Array(tags.root.ref.String())).
-		SetRef("ParentTree", parentTreeRef)
+		SetRef("ParentTree", parentTreeRef).
+		String())
 
-	return b.writer.AddDict(root), nil
+	return rootRef, nil
 }
 
 // reserveRefs walks the tree reserving an object number for every node.
@@ -255,13 +285,16 @@ func reserveRefs(w *pdfobj.Writer, elem *structElem) {
 }
 
 // writeStructElem writes one node and everything beneath it.
-func (b *Builder) writeStructElem(elem *structElem, pageRefs []pdfobj.Ref) error {
+func (b *Builder) writeStructElem(elem *structElem, pageRefs []pdfobj.Ref, rootRef pdfobj.Ref) error {
 	dict := pdfobj.NewDict().
 		SetName("Type", "StructElem").
 		SetName("S", string(elem.mark.Role))
 
+	// The topmost element's parent is the tree root itself.
 	if elem.parent != nil {
 		dict.SetRef("P", elem.parent.ref)
+	} else {
+		dict.SetRef("P", rootRef)
 	}
 
 	// The kids of an element are its own content sequences followed by its child
@@ -306,7 +339,7 @@ func (b *Builder) writeStructElem(elem *structElem, pageRefs []pdfobj.Ref) error
 
 	for _, child := range elem.children {
 		kids = append(kids, child.ref.String())
-		if err := b.writeStructElem(child, pageRefs); err != nil {
+		if err := b.writeStructElem(child, pageRefs, rootRef); err != nil {
 			return err
 		}
 	}
@@ -324,6 +357,20 @@ func (b *Builder) writeStructElem(elem *structElem, pageRefs []pdfobj.Ref) error
 		dict.Set("K", kids[0])
 	} else if len(kids) > 1 {
 		dict.Set("K", pdfobj.Array(kids...))
+	}
+
+	// A header cell has to say which way it heads: down a column or across a row. Without
+	// it a reader knows the cell is a heading and not what it heads, which is most of the
+	// value of marking it.
+	if elem.mark.Role == core.RoleTableHeader {
+		scope := elem.mark.Scope
+		if scope == "" {
+			scope = core.ScopeColumn
+		}
+		dict.Set("A", pdfobj.NewDict().
+			SetName("O", "Table").
+			SetName("Scope", string(scope)).
+			String())
 	}
 
 	if elem.mark.Alt != "" {
@@ -377,6 +424,19 @@ func (b *Builder) emitParentTree(tags *tagState, pageRefs []pdfobj.Ref) pdfobj.R
 		numbers = append(numbers, fmt.Sprint(page), pdfobj.Array(refs...))
 	}
 
+	// Annotation keys follow the page keys, so the number tree stays in ascending order.
+	keys := make([]int, 0, len(tags.annotationOwners))
+	for key := range tags.annotationOwners {
+		keys = append(keys, key)
+	}
+	sort.Ints(keys)
+
+	for _, key := range keys {
+		// An annotation's entry is the element itself rather than an array: it is one
+		// object, not a numbered sequence of them.
+		numbers = append(numbers, fmt.Sprint(key), tags.annotationOwners[key].ref.String())
+	}
+
 	tree := pdfobj.NewDict().Set("Nums", pdfobj.Array(numbers...))
 	return b.writer.AddDict(tree)
 }
@@ -390,4 +450,54 @@ func (b *Builder) structParents(page int) (int, bool) {
 		return 0, false
 	}
 	return page, true
+}
+
+// xmpMetadata builds the XMP packet a conforming document has to carry.
+//
+// Tagging the content is not enough on its own: a document also has to say that it claims
+// conformance, and that claim lives in XMP rather than in the document information
+// dictionary. Without it a file can be perfectly tagged and still fail validation, which
+// is the least useful way to fail — everything works and nothing certifies it.
+//
+// The title is included because a reader is asked to show it in place of the filename, and
+// asking for that while leaving it empty would show nothing.
+func xmpMetadata(title string) []byte {
+	var b strings.Builder
+
+	// The packet identifier is fixed by the XMP specification, and the leading marker is a
+	// byte-order mark, which is what tells a tool scanning raw bytes that the packet is
+	// UTF-8. Go will not accept one as a literal in source, so it is escaped here and
+	// written as the single character it is.
+	b.WriteString("<?xpacket begin=\"\ufeff\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n")
+	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/">` + "\n")
+	b.WriteString(` <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
+
+	if title != "" {
+		b.WriteString(`  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">` + "\n")
+		b.WriteString("   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">")
+		b.WriteString(escapeXML(title))
+		b.WriteString("</rdf:li></rdf:Alt></dc:title>\n")
+		b.WriteString("  </rdf:Description>\n")
+	}
+
+	b.WriteString(`  <rdf:Description rdf:about="" xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">` + "\n")
+	b.WriteString("   <pdfuaid:part>1</pdfuaid:part>\n")
+	b.WriteString("  </rdf:Description>\n")
+	b.WriteString(" </rdf:RDF>\n</x:xmpmeta>\n")
+	b.WriteString("<?xpacket end=\"w\"?>")
+
+	return []byte(b.String())
+}
+
+func escapeXML(s string) string {
+	replacements := []struct{ from, to string }{
+		{"&", "&amp;"},
+		{"<", "&lt;"},
+		{">", "&gt;"},
+		{`"`, "&quot;"},
+	}
+	for _, r := range replacements {
+		s = strings.ReplaceAll(s, r.from, r.to)
+	}
+	return s
 }

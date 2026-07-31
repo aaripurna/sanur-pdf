@@ -104,6 +104,16 @@ func (b *Builder) emitAnnotations(page int, pageRefs []pdfobj.Ref) (string, erro
 			annot.SetTextString("Contents", link.target.URL)
 		}
 
+		// The link needs both directions. The structure reaches the annotation through an
+		// object reference, recorded below; the annotation reaches the structure through
+		// this key, and it is the second one software checks — a link with only the first
+		// is reported as not tagged at all.
+		if link.owner != nil {
+			key := len(pageRefs) + len(b.tags.annotationOwners)
+			b.tags.annotationOwners[key] = link.owner
+			annot.SetInt("StructParent", key)
+		}
+
 		ref := b.writer.AddDict(annot)
 		refs = append(refs, ref.String())
 

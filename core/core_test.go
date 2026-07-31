@@ -851,3 +851,36 @@ func TestLandscapeSwapsDimensionsInCore(t *testing.T) {
 		t.Errorf("Landscape(A4) = %v, want the dimensions swapped", got)
 	}
 }
+
+// --- structure roles --------------------------------------------------------
+
+func TestHeadingRolesRoundTrip(t *testing.T) {
+	// The level is what a caller supplies and what the writer checks for skips, so the
+	// two directions have to agree.
+	for level := 1; level <= 6; level++ {
+		role := core.Heading(level)
+		if got := role.HeadingLevel(); got != level {
+			t.Errorf("Heading(%d) = %q, which reports level %d", level, role, got)
+		}
+	}
+
+	// Out of range clamps rather than failing: a document nested seven deep has a
+	// structure problem, not a reason to refuse to generate, and the sixth level is the
+	// honest approximation of "deeper than the format can say".
+	if got := core.Heading(0); got != core.RoleHeading1 {
+		t.Errorf("Heading(0) = %q, want H1", got)
+	}
+	if got := core.Heading(9); got != core.RoleHeading6 {
+		t.Errorf("Heading(9) = %q, want H6", got)
+	}
+}
+
+func TestNonHeadingRolesReportNoLevel(t *testing.T) {
+	for _, role := range []core.Role{
+		core.RoleParagraph, core.RoleFigure, core.RoleTable, core.RoleArtifact, core.RoleNone,
+	} {
+		if got := role.HeadingLevel(); got != 0 {
+			t.Errorf("%q reports heading level %d, want 0", role, got)
+		}
+	}
+}

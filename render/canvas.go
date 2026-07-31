@@ -31,10 +31,13 @@ type PDFCanvas struct {
 	// silently and misplace everything after it.
 	depth int
 
-	// marked records, per open marked-content sequence, whether an operator was
-	// actually emitted for it. A grouping structure element opens no sequence, so
-	// EndMarked has to know which ones to close and which merely to pop.
-	marked []bool
+	// marks is the stack of open structure elements, and whether each currently has a
+	// marked-content sequence open in the stream.
+	marks []markFrame
+
+	// implicit records that the sequence currently open was opened for ink that declared
+	// no role, and so has to be closed as soon as that ink is drawn.
+	implicit bool
 
 	// ctm mirrors the transform built up by Translate and Rotate, excluding the
 	// page-level Y flip. Drawing does not need it — the reader applies the cm
@@ -177,6 +180,9 @@ func (c *PDFCanvas) DrawRect(pos core.Position, size core.Size, fill core.Color)
 	if !fill.Visible() || size.Width <= 0 || size.Height <= 0 {
 		return
 	}
+	c.markContent()
+	defer c.endContent()
+
 	c.withAlpha(fill, func() {
 		c.setFillColor(fill)
 		c.op("%s %s %s %s re f",
@@ -212,6 +218,8 @@ func (c *PDFCanvas) DrawPath(path *core.Path, style core.PathStyle) {
 	if path.Empty() || !style.Visible() {
 		return
 	}
+	c.markContent()
+	defer c.endContent()
 
 	c.withPathAlpha(style, func() {
 		if style.Fills() {
@@ -330,6 +338,9 @@ func (c *PDFCanvas) DrawLine(from, to core.Position, stroke core.Color, width fl
 	if !stroke.Visible() || width <= 0 {
 		return
 	}
+	c.markContent()
+	defer c.endContent()
+
 	c.withAlpha(stroke, func() {
 		c.setStrokeColor(stroke)
 		c.op("%s w", pdfobj.Num(width))
@@ -354,6 +365,9 @@ func (c *PDFCanvas) DrawText(text string, pos core.Position, style core.TextStyl
 	// what registers the glyphs this font needs — and the font dictionary that
 	// declares them is written only once every page has been drawn.
 	operand := c.builder.encodeText(usage, text)
+
+	c.markContent()
+	defer c.endContent()
 
 	c.withAlpha(style.Color, func() {
 		c.setFillColor(style.Color)
@@ -424,6 +438,8 @@ func (c *PDFCanvas) DrawImage(img core.Image, pos core.Position, size core.Size)
 		c.Fail(err)
 		return
 	}
+	c.markContent()
+	defer c.endContent()
 
 	// An image XObject draws into the unit square, so it is positioned and
 	// sized entirely by the transform. The negative Y scale and the offset by
@@ -482,47 +498,102 @@ func (c *PDFCanvas) withAlpha(col core.Color, draw func()) {
 	c.Restore()
 }
 
-// BeginMarked opens a marked-content sequence and the structure element it belongs to.
+// BeginMarked opens a structure element.
 //
-// The sequence is what ties ink to meaning: everything drawn until the matching
-// EndMarked belongs to this element. A grouping role — a table, a list — owns no ink of
-// its own, so it enters the structure tree without opening a sequence here.
+// The marked-content sequence in the stream is not opened here. Whether this element owns
+// any ink is not yet known — a table cell holding a paragraph owns none — and a sequence
+// nested inside another leaves a reader unable to tell which of the two the content
+// belongs to. So the sequence opens on the first drawing operation that needs it, which
+// means the innermost element always owns the ink and nothing ever nests.
 func (c *PDFCanvas) BeginMarked(mark core.Mark) {
-	// Content inside a running header is decoration whatever the element thinks it is,
-	// so the artifact wins over anything nested within it.
-	if c.builder.tags.insideArtifact() && mark.Role != core.RoleArtifact {
+	if !c.builder.tags.enabled {
+		return
+	}
+
+	// Content inside a running header is decoration whatever the element thinks it is, so
+	// the artifact wins over what is nested in it — except for a link. A conforming
+	// document requires every link annotation to sit inside a Link element, so a link in a
+	// footer stays a link, and the words it is on are content again rather than decoration.
+	if c.builder.tags.insideArtifact() &&
+		mark.Role != core.RoleArtifact && mark.Role != core.RoleLink {
 		mark = core.Mark{Role: core.RoleArtifact}
 	}
 
-	mcid, marked := c.builder.tags.begin(mark, c.page)
-	c.marked = append(c.marked, marked)
-
-	if !marked {
-		return
-	}
-
-	if mark.Role == core.RoleArtifact || mark.Role == core.RoleNone {
-		// An artifact has no identity to record, so the shorter operator applies.
-		c.op("/Artifact BMC")
-		return
-	}
-
-	c.op("%s << /MCID %d >> BDC", pdfobj.Name(string(mark.Role)), mcid)
+	elem := c.builder.tags.push(mark)
+	c.marks = append(c.marks, markFrame{elem: elem, artifact: elem == nil})
 }
 
-// EndMarked closes the sequence opened by the matching BeginMarked.
+// EndMarked closes the element opened by the matching BeginMarked, and its sequence if one
+// was opened.
 func (c *PDFCanvas) EndMarked() {
-	if len(c.marked) == 0 {
+	if !c.builder.tags.enabled || len(c.marks) == 0 {
 		return
 	}
 
-	marked := c.marked[len(c.marked)-1]
-	c.marked = c.marked[:len(c.marked)-1]
+	frame := c.marks[len(c.marks)-1]
+	c.marks = c.marks[:len(c.marks)-1]
 
-	c.builder.tags.end()
-
-	if marked {
+	if frame.open {
 		c.op("EMC")
+	}
+	c.builder.tags.pop()
+}
+
+// markContent opens a sequence for the innermost element, if one is not open already.
+//
+// Every drawing operation calls it, which is what makes the ink belong to the element that
+// is actually innermost at the moment it is drawn. An ancestor holding an open sequence is
+// closed first: sequences may not nest, and the ancestor will open a fresh one if it draws
+// again later.
+func (c *PDFCanvas) markContent() {
+	if !c.builder.tags.enabled {
+		return
+	}
+
+	// Ink drawn with nothing open would be content a conforming document is not allowed to
+	// have: it is neither tagged nor artifact, and software reports it as missing from the
+	// structure. Decoration reaches here — a background installed by a decorating method
+	// rather than as content — and so would a custom element that declares no role. Naming
+	// it an artifact is the safe reading: a reader skips it, rather than the file being
+	// invalid.
+	if len(c.marks) == 0 {
+		c.op("/Artifact BMC")
+		c.implicit = true
+		return
+	}
+
+	top := &c.marks[len(c.marks)-1]
+	if top.open {
+		return
+	}
+
+	for i := range c.marks[:len(c.marks)-1] {
+		if c.marks[i].open {
+			c.op("EMC")
+			c.marks[i].open = false
+		}
+	}
+
+	if top.artifact {
+		// An artifact has no identity to record, so the shorter operator applies.
+		c.op("/Artifact BMC")
+	} else {
+		mcid := c.builder.tags.allocate(top.elem, c.page)
+		c.op("%s << /MCID %d >> BDC",
+			pdfobj.Name(string(top.elem.mark.Role)), mcid)
+	}
+	top.open = true
+}
+
+// endContent closes a sequence markContent opened implicitly.
+//
+// Only the implicit one: a sequence belonging to a structure element stays open until that
+// element ends, so that a paragraph drawn as several runs is one content item rather than
+// one per run.
+func (c *PDFCanvas) endContent() {
+	if c.implicit {
+		c.op("EMC")
+		c.implicit = false
 	}
 }
 
@@ -558,3 +629,17 @@ func (c *PDFCanvas) Close() error {
 func (c *PDFCanvas) Size() core.Size { return c.size }
 
 var _ core.Canvas = (*PDFCanvas)(nil)
+
+// markFrame is one open structure element on the canvas's stack.
+type markFrame struct {
+	// elem is the structure element, or nil for an artifact.
+	elem *structElem
+
+	// artifact distinguishes a nil elem meaning "artifact" from a nil elem meaning
+	// nothing, since an artifact still opens a sequence in the stream.
+	artifact bool
+
+	// open records whether a sequence is currently open for this frame, so EndMarked
+	// knows whether to close one and markContent knows whether to open one.
+	open bool
+}

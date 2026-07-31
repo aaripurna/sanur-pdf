@@ -156,6 +156,9 @@ func structureOf(t *testing.T, data []byte) (pdfObjects, *node) {
 }
 
 // taggedDocument is a document exercising every kind of content that gets a role.
+//
+// It registers a font because it has to: a conforming tagged document embeds every font it
+// uses, and the built-in faces have no program to embed.
 func taggedDocument(t *testing.T) []byte {
 	t.Helper()
 
@@ -164,9 +167,12 @@ func taggedDocument(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 
+	face := embeddedFont(t, "TaggedFace")
+
 	doc := sanur.New().Title("Accessible report").Tagged("en-GB").Uncompressed()
 	doc.Page(func(p *sanur.Page) {
 		p.Size(sanur.A4).Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 		p.Header().Text("running header")
 		p.Footer().AlignRight().PageNumber("Page {page} of {total}")
 
@@ -198,6 +204,8 @@ func TestTaggingIsOptIn(t *testing.T) {
 	// Tagging changes every content stream and adds a tree of objects. A document that
 	// did not ask for it must come out exactly as before, or the feature is a silent
 	// change to everyone's output.
+	face := embeddedFont(t, "OptInFace")
+
 	build := func(tagged bool) []byte {
 		doc := sanur.New().Title("Same document")
 		if tagged {
@@ -205,6 +213,7 @@ func TestTaggingIsOptIn(t *testing.T) {
 		}
 		doc.Page(func(p *sanur.Page) {
 			p.Size(sanur.A4).Margin(40)
+			p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 			p.Content().Column(func(c *sanur.ColumnBuilder) {
 				c.Item().Tag(sanur.Heading1).Text("Heading")
 				c.Item().Text("Body.")
@@ -412,10 +421,13 @@ func TestFigureWithoutADescriptionIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	face := embeddedFont(t, "FigureFace")
+
 	build := func(prepare func(*sanur.Container) *sanur.Container) error {
 		doc := sanur.New().Tagged("en-GB")
 		doc.Page(func(p *sanur.Page) {
 			p.Size(sanur.A4).Margin(40)
+			p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 			prepare(p.Content().Width(60)).Image(img)
 		})
 		_, err := doc.Bytes()
@@ -451,9 +463,12 @@ func TestSkippedHeadingLevelIsReported(t *testing.T) {
 	// outline with a hole in it, and no way to tell whether a level was forgotten or one
 	// was mislabelled. It is invisible in the rendered page, which is why it is worth
 	// refusing rather than warning about.
+	face := embeddedFont(t, "HeadingFace")
+
 	doc := sanur.New().Tagged("en-GB")
 	doc.Page(func(p *sanur.Page) {
 		p.Size(sanur.A4).Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Item().Tag(sanur.Heading1).Text("One")
 			c.Item().Tag(sanur.Heading3).Text("Three")
@@ -475,6 +490,7 @@ func TestSkippedHeadingLevelIsReported(t *testing.T) {
 	fine := sanur.New().Tagged("en-GB")
 	fine.Page(func(p *sanur.Page) {
 		p.Size(sanur.A4).Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Item().Tag(sanur.Heading1).Text("One")
 			c.Item().Tag(sanur.Heading2).Text("Two")
@@ -521,13 +537,21 @@ func TestLinkIsReachableFromTheStructure(t *testing.T) {
 	_ = objs
 }
 
-func TestFooterLinksStayOutOfTheStructure(t *testing.T) {
-	// A link in running furniture should still be clickable on every sheet, and should
-	// still not be part of the document's structure — the footer is decoration.
-	doc := sanur.New().Tagged("en-GB").Uncompressed()
+func TestLinksInFurnitureAreStillTagged(t *testing.T) {
+	// Running furniture is decoration, but a link inside it is not exempt: a conforming
+	// document requires every link annotation to sit inside a Link element, reachable in
+	// both directions. This was the last thing veraPDF rejected — the earlier design kept
+	// furniture links out of the structure entirely, which is tidy and wrong.
+	face := embeddedFont(t, "FurnitureLinkFace")
+
+	doc := sanur.New().Title("Footer link").Tagged("en-GB").Uncompressed()
 	doc.Page(func(p *sanur.Page) {
 		p.Size(sanur.A4).Margin(40)
-		p.Footer().Link("https://example.com/terms").Text("Terms")
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
+		p.Footer().Row(func(r *sanur.RowBuilder) {
+			r.RelativeItem(1).Text("plain footer text")
+			r.AutoItem().Link("https://example.com/terms").Text("Terms")
+		})
 		p.Content().Text("Body.")
 	})
 
@@ -537,15 +561,31 @@ func TestFooterLinksStayOutOfTheStructure(t *testing.T) {
 	}
 
 	if !bytes.Contains(data, []byte("/Subtype /Link")) {
-		t.Error("the footer link is not clickable")
-	}
-	if bytes.Contains(data, []byte("/Type /OBJR")) {
-		t.Error("a link in running furniture was added to the structure tree")
+		t.Fatal("the footer link is not clickable")
 	}
 
 	_, root := structureOf(t, data)
-	if strings.Contains(root.outline(), "Link") {
-		t.Errorf("the footer link entered the structure:\n%s", root.outline())
+	outline := root.outline()
+
+	// The link is in the tree, with the words it sits on inside it.
+	if !strings.Contains(outline, "Link") {
+		t.Errorf("the footer link is missing from the structure:\n%s", outline)
+	}
+
+	// The plain footer text beside it is not: it is decoration, and announcing it on every
+	// sheet would be worse than silence.
+	paragraphs := strings.Count(outline, "P\n")
+	if paragraphs != 2 {
+		t.Errorf("found %d paragraphs, want 2 — the body and the link's words, "+
+			"but not the plain footer text:\n%s", paragraphs, outline)
+	}
+
+	// Both directions of the annotation's link to the structure.
+	if !bytes.Contains(data, []byte("/Type /OBJR")) {
+		t.Error("the structure does not reference the annotation")
+	}
+	if !bytes.Contains(data, []byte("/StructParent")) {
+		t.Error("the annotation does not reference the structure")
 	}
 }
 
@@ -589,9 +629,12 @@ func TestMarkedContentIsNumberedPerPage(t *testing.T) {
 	// MCIDs are unique within a page, not within a document, and the parent tree is keyed
 	// by page. A counter shared across pages would produce numbers that look plausible
 	// and a tree whose arrays are the wrong length — which no single-page test can see.
+	face := embeddedFont(t, "PerPageFace")
+
 	doc := sanur.New().Tagged("en-GB").Uncompressed()
 	doc.Page(func(p *sanur.Page) {
 		p.Size(sanur.A4).Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(10))
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Item().Tag(sanur.Heading1).Text("First sheet")
 			c.Item().Text("Body on the first sheet.")
@@ -652,4 +695,89 @@ func TestMarkedContentIsNumberedPerPage(t *testing.T) {
 	if !bytes.Contains(data, []byte("/H2 << /MCID 0 >> BDC")) {
 		t.Error("the second sheet does not number its content from zero")
 	}
+}
+
+func TestBuiltInFontsAreRefusedInATaggedDocument(t *testing.T) {
+	// A conforming tagged document embeds every font it uses, and a built-in face has no
+	// program to embed: the file names it and the reader supplies the outlines, so the
+	// document depends on what the reader happens to have. Nothing here can fix that, so
+	// the only honest options are to report it or to ship a document that is tagged and not
+	// conformant. This was veraPDF's finding, not a guess.
+	doc := sanur.New().Tagged("en-GB")
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Text("Set in the built-in Helvetica.")
+	})
+
+	_, err := doc.Bytes()
+	if err == nil {
+		t.Fatal("a tagged document using a built-in font was accepted")
+	}
+	for _, want := range []string{"Helvetica", "embed", "register"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+
+	// The same document is fine untagged, which is the point of the constraint being
+	// scoped to tagging rather than applying everywhere.
+	plain := sanur.New()
+	plain.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(40)
+		p.Content().Text("Set in the built-in Helvetica.")
+	})
+	if _, err := plain.Bytes(); err != nil {
+		t.Errorf("an untagged document using a built-in font was refused: %v", err)
+	}
+}
+
+// TestTaggedDocumentIsPDFUAConformant hands the document to the validator.
+//
+// Everything else here checks the structure sanur meant to write. This checks the hundred
+// or so rules nobody would think to check, and it is what found the six real defects the
+// hand-written assertions could not: the topmost structure element missing its parent, so
+// that every tagged sequence in the document read as untagged; nested marked content;
+// decoration drawn outside any sequence; no XMP identifier; header cells with no scope;
+// annotations reachable in one direction only; and built-in fonts, which cannot be embedded
+// at all.
+func TestTaggedDocumentIsPDFUAConformant(t *testing.T) {
+	verapdf, err := exec.LookPath("verapdf")
+	if err != nil {
+		t.Skip("verapdf not installed")
+	}
+
+	path := filepath.Join(t.TempDir(), "tagged.pdf")
+	if err := os.WriteFile(path, taggedDocument(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The text format is one line per file: PASS or FAIL. The XML report carries the
+	// detail, and is worth printing on failure rather than leaving somebody to rerun it
+	// by hand.
+	out, err := exec.Command(verapdf, "--flavour", "ua1", "--format", "text", path).Output()
+	if err != nil {
+		t.Fatalf("verapdf failed: %v", err)
+	}
+
+	if !bytes.HasPrefix(out, []byte("PASS")) {
+		detail, _ := exec.Command(verapdf, "--flavour", "ua1", path).Output()
+		t.Errorf("the document is not PDF/UA-1 conformant: %s\n%s", out, failedRules(detail))
+	}
+}
+
+// failedRules summarises a veraPDF report, since the raw XML is thousands of lines.
+func failedRules(report []byte) string {
+	var b strings.Builder
+
+	// Parsed by pattern rather than as XML: this only runs on failure, and a helper that
+	// needs its own error handling to explain an error is a poor trade.
+	rules := regexp.MustCompile(`<rule[^>]*clause="([^"]*)"[^>]*testNumber="([^"]*)"[^>]*status="failed"[^>]*>`)
+	for _, m := range rules.FindAllSubmatch(report, -1) {
+		fmt.Fprintf(&b, "  failed: clause %s test %s\n", m[1], m[2])
+	}
+
+	if b.Len() == 0 {
+		return "  (no failed rules reported; the report may be malformed)"
+	}
+	return b.String()
 }

@@ -143,6 +143,18 @@ func (b *Builder) emitFonts() error {
 // It takes no descriptor and no width array, and supplying one is what causes
 // readers to demand a full descriptor as well.
 func (b *Builder) simpleFont(p fonts.FontProgram) (*pdfobj.Dict, error) {
+	// A conforming tagged document has to embed every font it uses, and a built-in face is
+	// by definition not embedded: the file names it and the reader supplies the outlines,
+	// which means the document depends on what the reader happens to have. There is
+	// nothing to embed, so this cannot be fixed here — only reported, before a document
+	// ships that is tagged and not conformant.
+	if b.tags.enabled {
+		return nil, fmt.Errorf(
+			"sanur/render: %q is a built-in font with no program to embed, and a tagged "+
+				"document must embed every font it uses; register a TrueType or OpenType "+
+				"font instead", p.BaseName)
+	}
+
 	if !p.Standard14 {
 		return nil, fmt.Errorf(
 			"sanur/render: font %q is neither standard-14 nor composite, "+

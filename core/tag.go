@@ -122,27 +122,6 @@ func Heading(level int) Role {
 	return Role("H" + string(rune('0'+level)))
 }
 
-// Grouping reports whether a role only contains other structure elements rather than
-// content of its own.
-//
-// The writer uses it to decide whether an element needs a marked-content sequence in
-// the page stream. A table contains rows and nothing else, so there is no ink that
-// belongs to the table itself.
-func (r Role) Grouping() bool {
-	switch r {
-	// Only the roles this package builds itself, and which therefore provably wrap
-	// other structure rather than content. A role that can wrap an arbitrary child —
-	// a link, a table cell — is deliberately absent: if it grouped, ink drawn by a
-	// custom element inside it would land outside any marked sequence, which is content
-	// a conforming document is not allowed to have. Owning a sequence that sometimes
-	// covers nothing is the cheaper mistake.
-	case RoleDocument, RoleSection, RoleTable, RoleTableRow,
-		RoleList, RoleListItem:
-		return true
-	}
-	return false
-}
-
 // Mark describes one structure element: what it means, and what a reader should say
 // about it beyond the text it contains.
 type Mark struct {
@@ -164,7 +143,26 @@ type Mark struct {
 	// Title is a human-readable label for the element, shown in a reader's structure
 	// panel and useful on a section.
 	Title string
+
+	// Scope says which way a table header applies: down its column or across its row.
+	// It is required on a header cell — a reader that knows a cell is a heading but not
+	// what it heads has gained very little — and defaults to the column.
+	Scope Scope
 }
+
+// Scope is the direction a table header cell applies in.
+type Scope string
+
+const (
+	// ScopeColumn heads the cells below, which is what a table's top row usually does.
+	ScopeColumn Scope = "Column"
+
+	// ScopeRow heads the cells beside it, for a table whose labels run down the left.
+	ScopeRow Scope = "Row"
+
+	// ScopeBoth heads both, for the corner cell of a table labelled on two edges.
+	ScopeBoth Scope = "Both"
+)
 
 // Tagger is the part of a Canvas that records structure.
 //

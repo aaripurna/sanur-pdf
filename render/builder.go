@@ -178,6 +178,13 @@ func (b *Builder) Bytes() ([]byte, error) {
 
 		if annots != "" {
 			page.Set("Annots", annots)
+
+			// A page with annotations has to say what order they are reached in, and
+			// structure order is the only answer that agrees with the reading order the
+			// rest of the document declares.
+			if b.tags.enabled {
+				page.SetName("Tabs", "S")
+			}
 		}
 
 		// The key into the parent tree, which is how a reader gets from a point on the
@@ -215,6 +222,15 @@ func (b *Builder) Bytes() ([]byte, error) {
 		SetRef("Pages", b.pagesRef)
 
 	if structRef.Valid() {
+		// The XMP packet is what makes the document claim conformance; the tagging is
+		// what makes the claim true.
+		metadata := pdfobj.NewDict().
+			SetName("Type", "Metadata").
+			SetName("Subtype", "XML")
+
+		catalog.SetRef("Metadata",
+			b.writer.AddStream(metadata, xmpMetadata(b.meta.Title)))
+
 		catalog.SetRef("StructTreeRoot", structRef).
 			// Marked says the content streams carry marked content; without it a
 			// reader has no reason to look for the tree at all.

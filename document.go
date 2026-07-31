@@ -465,22 +465,16 @@ func (d *Document) drawSheet(
 		furnitureCanvas = core.WithoutAnchors(canvas)
 	}
 
-	// Running furniture is decoration, whatever it contains. A header repeated on forty
-	// sheets is not forty paragraphs to announce, and a tagged document has no third
-	// category between content and artifact — so anything left unmarked would be read
-	// out on every page.
-	furnitureCanvas = core.WithoutTags(furnitureCanvas)
-
 	// The watermark spans the whole sheet, margins included, and reserves no space:
 	// it sits behind the content rather than beside it.
 	canvas.Save()
-	page.watermark.Draw(furnitureCanvas, page.size)
+	drawFurniture(canvas, furnitureCanvas, page.watermark, page.size)
 	canvas.Restore()
 
 	if furniture.headerHeight > 0 {
 		canvas.Save()
 		canvas.Translate(origin)
-		page.header.Draw(furnitureCanvas, core.Size{Width: inner.Width, Height: furniture.headerHeight})
+		drawFurniture(canvas, furnitureCanvas, page.header, core.Size{Width: inner.Width, Height: furniture.headerHeight})
 		canvas.Restore()
 	}
 
@@ -496,14 +490,30 @@ func (d *Document) drawSheet(
 		footerTop := page.size.Height - page.margin.bottom - furniture.footerHeight
 		canvas.Save()
 		canvas.Translate(core.Position{X: page.margin.left, Y: footerTop})
-		page.footer.Draw(furnitureCanvas, core.Size{Width: inner.Width, Height: furniture.footerHeight})
+		drawFurniture(canvas, furnitureCanvas, page.footer, core.Size{Width: inner.Width, Height: furniture.footerHeight})
 		canvas.Restore()
 	}
 
 	// Last, so it paints over everything.
 	canvas.Save()
-	page.overlay.Draw(furnitureCanvas, page.size)
+	drawFurniture(canvas, furnitureCanvas, page.overlay, page.size)
 	canvas.Restore()
+}
+
+// drawFurniture draws a running element inside an artifact scope.
+//
+// Running furniture is decoration whatever it contains: a header repeated on forty sheets
+// is not forty paragraphs to announce, and "Page 12 of 40" read out between every two
+// paragraphs is worse than silence. A tagged document has no third category between
+// content and artifact, so this is what keeps the furniture out of the structure.
+//
+// A link inside it is the exception, and escapes: every link annotation has to sit inside a
+// Link element, and a "Terms" link in a footer is genuinely worth reaching.
+func drawFurniture(canvas core.Canvas, inner core.Canvas, part core.Element, size core.Size) {
+	canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
+	defer canvas.EndMarked()
+
+	part.Draw(inner, size)
 }
 
 // furnitureSizes holds the resolved header and footer heights for one sheet.
