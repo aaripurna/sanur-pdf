@@ -44,6 +44,13 @@ func (c *DiscardCanvas) Link(core.Position, core.Size, core.LinkTarget) {}
 func (c *DiscardCanvas) Destination(string, core.Position)              {}
 func (c *DiscardCanvas) Bookmark(string, int, string)                   {}
 
+// BeginMarked and EndMarked do nothing, but must exist: the counting pass draws the
+// whole document through this canvas, so every element's structure calls arrive here.
+// Recording them would be worse than dropping them — the pass is thrown away, and the
+// structure tree would be built twice over.
+func (c *DiscardCanvas) BeginMarked(core.Mark) {}
+func (c *DiscardCanvas) EndMarked()            {}
+
 // Fail records an error. Failures are still collected during a discarded pass:
 // a font that cannot be embedded or a malformed image is worth reporting before
 // the second pass repeats the same work.

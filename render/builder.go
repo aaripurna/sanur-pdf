@@ -63,6 +63,10 @@ type Builder struct {
 	bookmarks      []bookmark
 	duplicateDests []string
 
+	// tags holds the document's logical structure. It is inert unless the document
+	// asked to be tagged, so an untagged run produces byte-identical output.
+	tags *tagState
+
 	meta Metadata
 }
 
@@ -81,12 +85,25 @@ func NewBuilder(meta Metadata, compress bool) *Builder {
 		imageRefs:    map[string]pdfobj.Ref{},
 		alphaNames:   map[[2]uint8]string{},
 		destinations: map[string]destination{},
+		tags:         newTagState(),
 		meta:         meta,
 	}
 	// The page tree node is referenced by every page it contains, so its number
 	// has to exist before any page object is written.
 	b.pagesRef = b.writer.Reserve()
 	return b
+}
+
+// Tag switches on tagged output, recording the document's logical structure alongside
+// its ink. language is a BCP 47 tag such as "en-GB", and is required: a reader that does
+// not know what language a document is in cannot pronounce it.
+//
+// It has to be set before any page is drawn, because the structure is accumulated as
+// pages are drawn rather than derived afterwards.
+func (b *Builder) Tag(language string) {
+	b.tags.enabled = true
+	b.tags.language = language
+	b.tags.root = &structElem{mark: core.Mark{Role: core.RoleDocument}}
 }
 
 // NewPage returns a canvas for a fresh page of the given size. The page is
@@ -163,6 +180,12 @@ func (b *Builder) Bytes() ([]byte, error) {
 			page.Set("Annots", annots)
 		}
 
+		// The key into the parent tree, which is how a reader gets from a point on the
+		// page back to its place in the structure.
+		if parents, ok := b.structParents(i); ok {
+			page.SetInt("StructParents", parents)
+		}
+
 		b.writer.Put(pageRefs[i], page.String())
 	}
 
@@ -182,9 +205,26 @@ func (b *Builder) Bytes() ([]byte, error) {
 		return nil, err
 	}
 
+	structRef, err := b.emitStructure(pageRefs)
+	if err != nil {
+		return nil, err
+	}
+
 	catalog := pdfobj.NewDict().
 		SetName("Type", "Catalog").
 		SetRef("Pages", b.pagesRef)
+
+	if structRef.Valid() {
+		catalog.SetRef("StructTreeRoot", structRef).
+			// Marked says the content streams carry marked content; without it a
+			// reader has no reason to look for the tree at all.
+			Set("MarkInfo", pdfobj.NewDict().Set("Marked", "true").String()).
+			SetString("Lang", b.tags.language).
+			// PDF/UA requires a reader to show the document's title rather than its
+			// filename, which is only meaningful because the title is in the metadata.
+			Set("ViewerPreferences",
+				pdfobj.NewDict().Set("DisplayDocTitle", "true").String())
+	}
 
 	if outlineRef.Valid() {
 		catalog.SetRef("Outlines", outlineRef)

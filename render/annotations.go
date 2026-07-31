@@ -14,6 +14,14 @@ type linkRequest struct {
 	page   int
 	rect   [4]float64
 	target core.LinkTarget
+
+	// owner is the structure element the link's content belongs to, for tagged output.
+	//
+	// A link annotation has to be reachable from the structure tree, not just present on
+	// the page: a reader announcing "link" needs to know which words it is on, and the
+	// only thing that says so is an object reference from the element wrapping them back
+	// to the annotation.
+	owner *structElem
 }
 
 // destination is a resolved anchor: which page, and how far up it.
@@ -33,7 +41,14 @@ type bookmark struct {
 
 // addLink records a link for the given page.
 func (b *Builder) addLink(page int, rect [4]float64, target core.LinkTarget) {
-	b.links = append(b.links, linkRequest{page: page, rect: rect, target: target})
+	b.links = append(b.links, linkRequest{
+		page:   page,
+		rect:   rect,
+		target: target,
+		// Whatever structure element is open owns the link, so the tree can point at
+		// the annotation once it has been written.
+		owner: b.tags.current(),
+	})
 }
 
 // addDestination records a named anchor.
@@ -82,7 +97,21 @@ func (b *Builder) emitAnnotations(page int, pageRefs []pdfobj.Ref) (string, erro
 			Set("Border", pdfobj.IntArray([]int{0, 0, 0})).
 			Set("A", action)
 
-		refs = append(refs, b.writer.AddDict(annot).String())
+		// The annotation is described for a reader that announces it, and its
+		// alternative text is the address when there is nothing better. Without this a
+		// link is announced as "link" and nothing more.
+		if link.target.External() {
+			annot.SetTextString("Contents", link.target.URL)
+		}
+
+		ref := b.writer.AddDict(annot)
+		refs = append(refs, ref.String())
+
+		// Recorded rather than written here: the structure tree is emitted after every
+		// page, so this is what lets the element that wrapped the link point back at it.
+		if link.owner != nil {
+			link.owner.annotations = append(link.owner.annotations, ref)
+		}
 	}
 
 	if len(refs) == 0 {

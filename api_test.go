@@ -1384,9 +1384,16 @@ func TestLinksInFurnitureStillFireOnEverySheet(t *testing.T) {
 	if pages < 3 {
 		t.Fatalf("expected several sheets, got %d", pages)
 	}
-	if got := strings.Count(string(data), "(https://example.com)"); got != pages {
+	// Link annotations are counted rather than occurrences of the address, which now
+	// appears twice per annotation: once in the action a click follows, and once as the
+	// description a reader announces.
+	if got := strings.Count(string(data), "/Subtype /Link"); got != pages {
 		t.Errorf("footer link appears %d times across %d sheets, want one per sheet",
 			got, pages)
+	}
+	if got := strings.Count(string(data), "(https://example.com)"); got != 2*pages {
+		t.Errorf("the address appears %d times, want twice per annotation — the action "+
+			"and the description", got)
 	}
 }
 

@@ -71,6 +71,10 @@ type Canvas interface {
 	// a destination registered separately.
 	Bookmark(title string, level int, destination string)
 
+	// Tagger records the document's logical structure. Elements declare what their
+	// content means; a canvas with tagging switched off ignores it.
+	Tagger
+
 	// Fail records an error encountered while drawing.
 	//
 	// Draw has no error return by design: threading one through every container
@@ -105,6 +109,21 @@ type withoutAnchors struct {
 
 func (withoutAnchors) Destination(string, Position) {}
 func (withoutAnchors) Bookmark(string, int, string) {}
+
+// WithoutTags returns a canvas that draws normally but records no structure, marking
+// everything it draws as an artifact instead.
+//
+// This is what running furniture wants. A header repeated on forty sheets is not forty
+// paragraphs a reader should announce; it is decoration, and the structure tree should
+// have nothing to say about it. Page numbers are the clearest case — "Page 12 of 40"
+// read out between every two paragraphs is worse than silence.
+func WithoutTags(c Canvas) Canvas { return withoutTags{Canvas: c} }
+
+type withoutTags struct {
+	Canvas
+}
+
+func (w withoutTags) BeginMarked(Mark) { w.Canvas.BeginMarked(Mark{Role: RoleArtifact}) }
 
 // LinkTarget is where a link leads.
 //

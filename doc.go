@@ -68,6 +68,14 @@
 // every glyph the font has: Latin Extended, Greek, Cyrillic, and Hebrew, Arabic,
 // Persian and Urdu complete with bidirectional reordering and Arabic letter shaping.
 //
+// # Accessible output
+//
+// [Document.Tagged] records the document's logical structure alongside its ink, so that
+// software can tell a heading from a caption and a table's figures from its labels. Most
+// of it is inferred; a heading's level and a picture's description have to be declared,
+// and generation fails without them rather than producing a document that passes for
+// accessible.
+//
 // # Concurrency
 //
 // A Document is not safe for concurrent use, and neither is anything reachable from

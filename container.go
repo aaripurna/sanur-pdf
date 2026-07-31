@@ -22,6 +22,16 @@ type Container struct {
 
 	// style is the inherited text style, applied by Text and its relatives.
 	style core.TextStyle
+
+	// mark is the structure element the next content installed here belongs to, for
+	// tagged output. The zero value means "whatever suits the content": text is a
+	// paragraph, an image a figure. Tag and its relatives override it.
+	//
+	// It is carried alongside the style rather than applied by a wrapping element,
+	// because the role belongs to the content itself. Wrapping would nest an explicit
+	// heading around the paragraph the text installs, and a reader would be told the
+	// heading contains a paragraph rather than that it is one.
+	mark core.Mark
 }
 
 func newContainer(install func(core.Element), style core.TextStyle) *Container {
@@ -31,7 +41,67 @@ func newContainer(install func(core.Element), style core.TextStyle) *Container {
 // wrap installs a decorating element and returns the container for its child.
 func (c *Container) wrap(element core.Element, slot func(core.Element)) *Container {
 	c.install(element)
-	return newContainer(slot, c.style)
+
+	child := newContainer(slot, c.style)
+	child.mark = c.mark
+	return child
+}
+
+// installContent places a content element, wrapped in the structure element it belongs
+// to.
+//
+// role is what this kind of content is by default; an explicit Tag overrides it. The
+// wrapper is inert unless the document asked to be tagged, so this costs an untagged
+// document one extra element and nothing else.
+func (c *Container) installContent(role core.Role, e core.Element) {
+	mark := c.mark
+	if mark.Role == core.RoleNone {
+		mark.Role = role
+	}
+	c.install(&elements.Tagged{Mark: mark, Child: e})
+}
+
+// Tag declares what the content installed here means, for tagged output.
+//
+// Use it for the roles that cannot be inferred. A heading is the main one: no amount of
+// looking at a font size reveals whether text is a first- or a third-level heading, and
+// an outline that is confidently wrong is worse for a screen reader than none.
+//
+//	c.Item().Tag(sanur.Heading1).Text("Summary")
+//	c.Item().Tag(sanur.Quote).Text("...")
+//
+// It has no effect unless Document.Tagged was called.
+func (c *Container) Tag(role core.Role) *Container {
+	next := &Container{install: c.install, style: c.style, mark: c.mark}
+	next.mark.Role = role
+	return next
+}
+
+// Describe supplies alternative text, read out in place of the content.
+//
+// It is required on an image in a tagged document — a figure with nothing to read is
+// exactly the gap tagging exists to close — and generation fails without it rather than
+// producing a document that passes for accessible.
+//
+//	c.Item().Describe("Revenue by region, 2026").Element(chart)
+func (c *Container) Describe(alt string) *Container {
+	next := &Container{install: c.install, style: c.style, mark: c.mark}
+	next.mark.Alt = alt
+	return next
+}
+
+// Language marks the content as being in a different language from the document, so a
+// screen reader pronounces it correctly. The value is a BCP 47 tag such as "fr-CA".
+func (c *Container) Language(tag string) *Container {
+	next := &Container{install: c.install, style: c.style, mark: c.mark}
+	next.mark.Lang = tag
+	return next
+}
+
+// Decoration marks the content as carrying no meaning: a rule, a flourish, a background
+// image. A reader skips it instead of announcing it.
+func (c *Container) Decoration() *Container {
+	return c.Tag(core.RoleArtifact)
 }
 
 // Element installs an arbitrary element, the escape hatch for custom layout
@@ -40,7 +110,7 @@ func (c *Container) Element(e core.Element) { c.install(e) }
 
 // DefaultTextStyle overrides the inherited style for this subtree.
 func (c *Container) DefaultTextStyle(style *StyleBuilder) *Container {
-	return &Container{install: c.install, style: style.Build()}
+	return &Container{install: c.install, style: style.Build(), mark: c.mark}
 }
 
 // --- Spacing ---------------------------------------------------------------
@@ -322,12 +392,12 @@ func (c *Container) Table(build func(*TableBuilder)) {
 
 // Text draws wrapped text in the inherited style.
 func (c *Container) Text(content string) {
-	c.install(elements.NewText(content, c.style))
+	c.installContent(core.RoleParagraph, elements.NewText(content, c.style))
 }
 
 // StyledText draws text in an explicit style.
 func (c *Container) StyledText(content string, style *StyleBuilder) {
-	c.install(elements.NewText(content, style.Build()))
+	c.installContent(core.RoleParagraph, elements.NewText(content, style.Build()))
 }
 
 // RichText composes text from several styled spans, breaking lines across span
@@ -341,7 +411,9 @@ func (c *Container) RichText(build func(*TextBuilder)) {
 // PageNumber draws a label derived from the page it lands on. The format may
 // contain {page} and {total}.
 func (c *Container) PageNumber(format string) {
-	c.install(elements.NewPageNumber(format, c.style))
+	// A running page number is decoration: "Page 12 of 40" announced between every two
+	// paragraphs is worse than silence.
+	c.installContent(core.RoleArtifact, elements.NewPageNumber(format, c.style))
 }
 
 // PageRef prints the page number a named destination landed on, for a table of
@@ -372,33 +444,33 @@ func (c *Container) PageRefFormat(destination, format string) {
 
 // Image draws a decoded image, scaled to the available width by default.
 func (c *Container) Image(img core.Image) {
-	c.install(&elements.Image{Source: img, Fit: elements.FitWidth})
+	c.installContent(core.RoleFigure, &elements.Image{Source: img, Fit: elements.FitWidth})
 }
 
 // ImageFit draws an image with an explicit fitting mode.
 func (c *Container) ImageFit(img core.Image, fit elements.ImageFit) {
-	c.install(&elements.Image{Source: img, Fit: fit})
+	c.installContent(core.RoleFigure, &elements.Image{Source: img, Fit: fit})
 }
 
 // LineHorizontal draws a horizontal rule spanning the available width.
 func (c *Container) LineHorizontal(width float64, color core.Color) {
-	c.install(&elements.Line{Width: width, Color: color})
+	c.installContent(core.RoleArtifact, &elements.Line{Width: width, Color: color})
 }
 
 // LineVertical draws a vertical rule spanning the available height.
 func (c *Container) LineVertical(width float64, color core.Color) {
-	c.install(&elements.Line{Vertical: true, Width: width, Color: color})
+	c.installContent(core.RoleArtifact, &elements.Line{Vertical: true, Width: width, Color: color})
 }
 
 // DashedLineHorizontal draws a dashed horizontal rule. The dash lengths alternate
 // on and off in points; a single value means equal dashes and gaps.
 func (c *Container) DashedLineHorizontal(width float64, color core.Color, dash ...float64) {
-	c.install(&elements.Line{Width: width, Color: color, Dash: dash})
+	c.installContent(core.RoleArtifact, &elements.Line{Width: width, Color: color, Dash: dash})
 }
 
 // DashedLineVertical draws a dashed vertical rule.
 func (c *Container) DashedLineVertical(width float64, color core.Color, dash ...float64) {
-	c.install(&elements.Line{Vertical: true, Width: width, Color: color, Dash: dash})
+	c.installContent(core.RoleArtifact, &elements.Line{Vertical: true, Width: width, Color: color, Dash: dash})
 }
 
 // Path draws an arbitrary outline, filled, stroked or both.
@@ -408,7 +480,7 @@ func (c *Container) DashedLineVertical(width float64, color core.Color, dash ...
 // space with the origin at its top-left corner, and it claims whatever space the
 // parent offers, so wrap it in a constraint to give it a definite size.
 func (c *Container) Path(path *core.Path, style core.PathStyle) {
-	c.install(&elements.PathShape{Path: path, Style: style})
+	c.installContent(core.RoleArtifact, &elements.PathShape{Path: path, Style: style})
 }
 
 // PageBreak pushes everything after it in the enclosing column onto a new page.

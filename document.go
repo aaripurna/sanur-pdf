@@ -45,6 +45,10 @@ type Document struct {
 	// template is applied to each page definition before its own build function
 	// runs. See EveryPage.
 	template func(*Page)
+
+	// language is the document's natural language, and switching tagging on. Empty
+	// means untagged, which is the default.
+	language string
 }
 
 // New creates an empty document.
@@ -69,6 +73,33 @@ func (d *Document) Creator(v string) *Document  { d.meta.Creator = v; return d }
 // yields byte-identical output. A caller who wants a timestamp supplies it.
 func (d *Document) CreationDate(pdfDate string) *Document {
 	d.meta.CreationDate = pdfDate
+	return d
+}
+
+// Tagged records the document's logical structure alongside its ink, and sets the
+// natural language — a BCP 47 tag such as "en-GB".
+//
+// An ordinary PDF says where marks go and nothing more. A heading is text that happens
+// to be large; a table is lines that happen to form a grid. Nothing in the file says so,
+// which is why a PDF is opaque to a screen reader, cannot reflow onto a small display,
+// and resists conversion to anything structured. Tagging is the parallel structure that
+// carries the meaning, and it is a legal requirement for public-sector documents in much
+// of the world.
+//
+// Most of it is inferred: text is a paragraph, an image a figure, a rule and a running
+// header decoration a reader should skip. Two things are not, and both fail generation
+// rather than producing a document that merely passes for accessible:
+//
+//   - A heading has to be declared with Container.Tag, since a font size cannot reveal
+//     whether text is a first- or a third-level heading, and an outline that is
+//     confidently wrong is worse than none.
+//   - An image has to be described with Container.Describe, since a figure with nothing
+//     to read out is exactly the gap tagging exists to close.
+//
+// The language is required because a reader that does not know what language a document
+// is in cannot pronounce it.
+func (d *Document) Tagged(language string) *Document {
+	d.language = language
 	return d
 }
 
@@ -147,6 +178,10 @@ func (d *Document) Bytes() ([]byte, error) {
 	}
 
 	builder := render.NewBuilder(d.meta, d.compress)
+	if d.language != "" {
+		builder.Tag(d.language)
+	}
+
 	if _, err := d.layout(builder, resolved); err != nil {
 		return nil, err
 	}
@@ -415,7 +450,9 @@ func (d *Document) drawSheet(
 	firstSheet bool,
 ) {
 	if page.background.Visible() {
+		canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
 		canvas.DrawRect(core.Position{}, page.size, page.background)
+		canvas.EndMarked()
 	}
 
 	origin := core.Position{X: page.margin.left, Y: page.margin.top}
@@ -427,6 +464,12 @@ func (d *Document) drawSheet(
 	if !firstSheet {
 		furnitureCanvas = core.WithoutAnchors(canvas)
 	}
+
+	// Running furniture is decoration, whatever it contains. A header repeated on forty
+	// sheets is not forty paragraphs to announce, and a tagged document has no third
+	// category between content and artifact — so anything left unmarked would be read
+	// out on every page.
+	furnitureCanvas = core.WithoutTags(furnitureCanvas)
 
 	// The watermark spans the whole sheet, margins included, and reserves no space:
 	// it sits behind the content rather than beside it.

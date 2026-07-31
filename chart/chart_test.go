@@ -811,6 +811,8 @@ func (r *recorder) DrawImage(core.Image, core.Position, core.Size) {}
 func (r *recorder) Link(core.Position, core.Size, core.LinkTarget) {}
 func (r *recorder) Destination(string, core.Position)              {}
 func (r *recorder) Bookmark(string, int, string)                   {}
+func (r *recorder) BeginMarked(core.Mark)                          {}
+func (r *recorder) EndMarked()                                     {}
 
 // Fail keeps the first failure, matching how the real canvases behave: Draw has
 // no error return, so problems are collected and reported once.

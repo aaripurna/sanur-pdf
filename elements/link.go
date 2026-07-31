@@ -11,6 +11,12 @@ import "github.com/aaripurna/sanur-pdf/core"
 type Link struct {
 	Target core.LinkTarget
 	Child  core.Element
+
+	// Description is what a reader announces in place of the link's own words, for a
+	// tagged document. It is worth setting when the words alone do not say where the
+	// link goes: a list of "read more" links is unusable to somebody hearing them out
+	// of context.
+	Description string
 }
 
 func (l *Link) Measure(available core.Size) core.SpacePlan {
@@ -23,12 +29,20 @@ func (l *Link) NaturalSize(available core.Size) core.SpacePlan {
 }
 
 func (l *Link) Draw(canvas core.Canvas, available core.Size) {
-	core.DrawChild(l.Child, canvas, available)
+	// The structure element opens before the annotation is recorded, so the annotation
+	// knows which element owns it: a reader announcing a link needs to know which words
+	// it is on, and an annotation floating free on the page does not say.
+	canvas.BeginMarked(core.Mark{Role: core.RoleLink, Alt: l.Description})
+	defer canvas.EndMarked()
 
-	// Registered after the child draws, so a link whose child wrapped or drew
-	// nothing still covers the space the layout gave it — the rectangle belongs to
-	// the box, not to whatever ink landed in it.
+	// Registered while the structure element is open, so the annotation can be reached
+	// from the tree: a reader announcing a link needs to know which words it sits on, and
+	// an annotation floating free on the page does not say. The rectangle is the box the
+	// layout gave, not whatever ink landed in it, so this does not have to wait for the
+	// child to draw.
 	canvas.Link(core.Position{}, available, l.Target)
+
+	core.DrawChild(l.Child, canvas, available)
 }
 
 func (l *Link) Children() []core.Element {

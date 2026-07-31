@@ -31,6 +31,11 @@ type PDFCanvas struct {
 	// silently and misplace everything after it.
 	depth int
 
+	// marked records, per open marked-content sequence, whether an operator was
+	// actually emitted for it. A grouping structure element opens no sequence, so
+	// EndMarked has to know which ones to close and which merely to pop.
+	marked []bool
+
 	// ctm mirrors the transform built up by Translate and Rotate, excluding the
 	// page-level Y flip. Drawing does not need it — the reader applies the cm
 	// operators — but annotations are positioned in absolute page coordinates and
@@ -475,6 +480,50 @@ func (c *PDFCanvas) withAlpha(col core.Color, draw func()) {
 	c.op("%s gs", pdfobj.Name(c.builder.alphaResource(col.Opacity(), col.Opacity())))
 	draw()
 	c.Restore()
+}
+
+// BeginMarked opens a marked-content sequence and the structure element it belongs to.
+//
+// The sequence is what ties ink to meaning: everything drawn until the matching
+// EndMarked belongs to this element. A grouping role — a table, a list — owns no ink of
+// its own, so it enters the structure tree without opening a sequence here.
+func (c *PDFCanvas) BeginMarked(mark core.Mark) {
+	// Content inside a running header is decoration whatever the element thinks it is,
+	// so the artifact wins over anything nested within it.
+	if c.builder.tags.insideArtifact() && mark.Role != core.RoleArtifact {
+		mark = core.Mark{Role: core.RoleArtifact}
+	}
+
+	mcid, marked := c.builder.tags.begin(mark, c.page)
+	c.marked = append(c.marked, marked)
+
+	if !marked {
+		return
+	}
+
+	if mark.Role == core.RoleArtifact || mark.Role == core.RoleNone {
+		// An artifact has no identity to record, so the shorter operator applies.
+		c.op("/Artifact BMC")
+		return
+	}
+
+	c.op("%s << /MCID %d >> BDC", pdfobj.Name(string(mark.Role)), mcid)
+}
+
+// EndMarked closes the sequence opened by the matching BeginMarked.
+func (c *PDFCanvas) EndMarked() {
+	if len(c.marked) == 0 {
+		return
+	}
+
+	marked := c.marked[len(c.marked)-1]
+	c.marked = c.marked[:len(c.marked)-1]
+
+	c.builder.tags.end()
+
+	if marked {
+		c.op("EMC")
+	}
 }
 
 func (c *PDFCanvas) Fail(err error) {

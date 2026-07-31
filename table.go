@@ -89,7 +89,7 @@ func (t *TableBuilder) ColumnSpacing(v float64) *TableBuilder {
 func (t *TableBuilder) HeaderRow(build func(*TableRowBuilder)) *TableBuilder {
 	row := &elements.Row{Spacing: t.columnSpacing}
 	t.header = row
-	build(&TableRowBuilder{table: t, row: row})
+	build(&TableRowBuilder{table: t, row: row, header: true})
 	return t
 }
 
@@ -108,27 +108,50 @@ func (t *TableBuilder) build() core.Element {
 		// Column spacing is applied here rather than at Row construction so that
 		// ColumnSpacing can be called after the rows are declared.
 		row.Spacing = t.columnSpacing
-		col.Items = append(col.Items, row)
+		col.Items = append(col.Items, tagRow(row))
 	}
 
 	if t.header == nil {
-		return col
+		return tagTable(col)
 	}
 
 	t.header.Spacing = t.columnSpacing
 
 	// The header sits outside the paginating column, in a Repeat, which is what
 	// makes it reappear on each continuation.
-	return &elements.Repeat{
-		Header: &elements.Padding{Bottom: t.rowSpacing, Child: t.header},
+	return tagTable(&elements.Repeat{
+		Header: &elements.Padding{Bottom: t.rowSpacing, Child: tagRow(t.header)},
 		Body:   col,
-	}
+	})
+}
+
+// tagRow and tagTable declare the structure of a table.
+//
+// Both roles group: a table contains rows and a row contains cells, and neither owns any
+// ink of its own. Which is the point — a table's meaning is entirely in the arrangement,
+// and the arrangement is exactly what does not survive into the drawn rules.
+//
+// The header row is repeated on each sheet the table spans, so its cells are declared
+// afresh per sheet. That is correct rather than a compromise: each sheet's copy heads the
+// columns on that sheet.
+func tagRow(row core.Element) core.Element {
+	return &elements.Tagged{Mark: core.Mark{Role: core.RoleTableRow}, Child: row}
+}
+
+func tagTable(body core.Element) core.Element {
+	return &elements.Tagged{Mark: core.Mark{Role: core.RoleTable}, Child: body}
 }
 
 // TableRowBuilder fills in the cells of one row.
 type TableRowBuilder struct {
 	table *TableBuilder
 	row   *elements.Row
+
+	// header marks this as the row redrawn at the top of every sheet, whose cells head
+	// their columns. For tagged output that distinction is the whole meaning of a table:
+	// a reader can only say which column a figure sits under if something records which
+	// cell is the heading, and drawn rules record nothing.
+	header bool
 }
 
 // Cell appends the next cell, taking its width from the matching column.
@@ -149,9 +172,30 @@ func (r *TableRowBuilder) Cell() *Container {
 		Size:   spec.size,
 	})
 
-	return newContainer(func(e core.Element) {
+	cell := newContainer(func(e core.Element) {
 		r.row.Items[index].Element = e
 	}, r.table.style)
+
+	// A cell's content is a paragraph inside the cell, not a paragraph in the document,
+	// so the cell role goes on the container and the content nests inside it.
+	role := core.RoleTableCell
+	if r.header {
+		role = core.RoleTableHeader
+	}
+	cell.install = wrapInRole(role, cell.install)
+
+	return cell
+}
+
+// wrapInRole returns an install function that puts the element inside a structure
+// element of the given role.
+//
+// Used where the role belongs to a container rather than to its content: a table cell is
+// a cell whatever it holds, and its text is a paragraph within it.
+func wrapInRole(role core.Role, install func(core.Element)) func(core.Element) {
+	return func(e core.Element) {
+		install(&elements.Tagged{Mark: core.Mark{Role: role}, Child: e})
+	}
 }
 
 // Cells is shorthand for filling a row with plain text.

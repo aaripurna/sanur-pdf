@@ -103,7 +103,7 @@ All paths below are relative to `github.com/aaripurna/sanur-pdf`.
 | Package | Contents |
 | --- | --- |
 | `.` (`sanur`) | Fluent API: `Document`, `Page`, `Container`, styles, sizes, colours. |
-| `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`. No PDF knowledge. |
+| `core` | `Element`, `SpacePlan`, `Size`, `Canvas`, `Color`, `TextStyle`, `Role`. No PDF knowledge. |
 | `elements` | Layout primitives implementing `core.Element`. |
 | `chart` | Static line, area, bar, pie and donut charts. Depends only on `core` and `fonts`. |
 | `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading and subsetting, the name registry. |
@@ -772,7 +772,7 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 
 ```
 make examples     # or: make invoice / images / report / charts / themed
-                  #     make print / scripts / concurrent
+                  #     make print / scripts / concurrent / accessible
 ```
 
 | Example | What it covers |
@@ -783,6 +783,7 @@ make examples     # or: make invoice / images / report / charts / themed
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
+| `examples/accessible` | A tagged document: declared headings, a described figure, a table with real header cells, and furniture marked as decoration |
 | `examples/concurrent` | 64 invoices generated in parallel from one shared theme, compared byte for byte against the same 64 generated one at a time |
 | `examples/scripts` | Twenty languages from one registered font — including Hebrew, Arabic, Persian and Urdu — subsetted 20× smaller than the files it came from, with the same text in a built-in font for comparison |
 
@@ -806,6 +807,66 @@ since the label's own width can affect where content falls.
 Output is deterministic: sanur never reads the clock and never iterates a map
 while writing, so the same document always produces identical bytes. Supply
 `CreationDate` yourself if you want a timestamp.
+
+## Accessible output
+
+An ordinary PDF says where ink goes and nothing more. A heading is text that happens to
+be large; a table is lines that happen to form a grid. Nothing in the file says so, which
+is why a PDF is opaque to a screen reader, cannot reflow onto a small display and resists
+conversion into anything structured — and why tagged output is a procurement requirement
+for public-sector documents across much of the world.
+
+`Tagged` records the parallel structure that carries the meaning:
+
+```go
+doc := sanur.New().Title("Annual report").Tagged("en-GB")
+
+c.Item().Tag(sanur.Heading1).Text("Summary")
+c.Item().Text("Ordinary prose, which needs no declaration.")
+c.Item().Describe("Revenue by region, 2026").Element(chart)
+```
+
+The language is required: a reader that does not know what language a document is in
+cannot pronounce it.
+
+**Most of it is inferred.** Text is a paragraph, an image a figure, the content of a link
+a link, a table's header row the headings for its columns. A rule, a background, a running
+header and a page number are decoration, marked so that a reader skips them — which
+matters as much as tagging the content, because a conforming document has no third
+category and `Page 12 of 40` announced between every two paragraphs is worse than
+silence.
+
+**Two things are declared, and generation fails without them** rather than producing a
+document that passes for accessible:
+
+- **A heading and its level**, with `Tag`. Heading text is simply text that happens to be
+  large, and no font size reveals whether it is a first- or a third-level heading. An
+  outline that is confidently wrong is worse for a reader than none. Levels that skip —
+  a third-level heading after a first — are reported too, since that is invisible in the
+  rendered page.
+- **What a picture shows**, with `Describe`. A figure with nothing to read out is exactly
+  the gap tagging exists to close. `Decoration()` is the other honest answer, for a logo
+  that repeats on every page.
+
+`Container` also has `Language` for a passage in another tongue, and the structure roles
+are exported for the cases that need spelling out — `sanur.Quote`, `sanur.Caption`,
+`sanur.TableHeader` and the rest.
+
+### What it does not cover
+
+- **Tagging is not conformance.** A document can carry a flawless structure and still fail
+  on contrast, or on colour used as the only way to tell two things apart. A layout engine
+  cannot judge either.
+- **A paragraph split across a page break becomes two structure elements**, so a reader
+  announces two paragraphs rather than one.
+- **Form fields, notes and highlights are absent**, so a tagged document cannot yet
+  contain an accessible form.
+- **Mirroring under rule L4** covers paired brackets rather than the whole
+  `Bidi_Mirrored` property, and the explicit bidirectional controls are ignored.
+- **There is no conformance checker in the suite.** veraPDF is the validator for PDF/UA and
+  it is not a Go program, so the structure is verified by reading the object graph back
+  instead: the tree's shape, and every marked sequence reachable from the parent tree with
+  the role the stream used.
 
 ## Concurrency
 
@@ -874,20 +935,20 @@ because they are not interchangeable: which fonts a runner has decides which che
 run, and `make skipped` reports what did not into the run summary rather than letting a
 green tick stand for less than it appears to.
 
-619 tests across the nine library packages, at 95.4% statement coverage (the build tooling has its own tests and is measured separately):
+636 tests across the nine library packages, at 94.8% statement coverage (the build tooling has its own tests and is measured separately):
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 274 | 271 | 98.9% |
 | `text` | 359 | 349 | 97.2% |
-| `sanur` (root) | 472 | 454 | 96.2% |
+| `core` | 291 | 281 | 96.6% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `elements` | 726 | 693 | 95.5% |
-| `render` | 588 | 557 | 94.7% |
-| `fonts` | 502 | 473 | 94.2% |
+| `sanur` (root) | 505 | 483 | 95.6% |
+| `fonts` | 502 | 474 | 94.4% |
+| `elements` | 746 | 702 | 94.1% |
+| `render` | 746 | 701 | 94.0% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
-| **Total** | **3765** | **3591** | **95.4%** |
+| **Total** | **3993** | **3784** | **94.8%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -955,6 +1016,12 @@ What the suite checks, and why in that particular way:
   reader will actually open, and to confirm the text is text rather than shapes.
 - **The examples themselves** are compiled, run and Ghostscript-checked, including
   an assertion that no glyph was substituted with a question mark.
+- **The structure of a tagged document is read back, not grepped for.** A tree that is
+  present but wrong — an MCID pointing at the neighbouring paragraph, a parent tree with a
+  hole in it — renders identically to a correct one and is believed by the software that
+  consumes it. So the tests walk the object graph and check that every marked sequence is
+  reachable from the parent tree under the role the content stream used. Reversing that
+  array, or sharing the sequence counter across pages, both fail.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
 - **The concurrency promise is tested rather than asserted.** Sixteen documents are
@@ -980,8 +1047,8 @@ whatever still does.
   whole, while TrueType outlines are subsetted
 - Multi-column text flow
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
-- Annotations beyond links: notes, highlights, form fields
-- Tagged and accessible output (PDF/UA)
+- Annotations beyond links: notes, highlights, form fields — which also means a tagged
+  document cannot yet contain an accessible form
 - Encryption, and PDF/A conformance
 - Gradients and blend modes (dash patterns, arcs and paths are implemented)
 - Spot colours (`Separation` and `DeviceN`), overprint control, and ICC-based colour

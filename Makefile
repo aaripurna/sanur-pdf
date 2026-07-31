@@ -59,7 +59,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report charts themed print scripts concurrent
+examples: invoice images report charts themed print scripts concurrent accessible
 
 .PHONY: invoice
 invoice:
@@ -97,6 +97,11 @@ scripts:
 .PHONY: concurrent
 concurrent:
 	go run ./examples/concurrent concurrent.pdf
+
+# A tagged document, carrying its own structure for a screen reader.
+.PHONY: accessible
+accessible:
+	go run ./examples/accessible accessible.pdf
 
 .PHONY: clean
 clean:
