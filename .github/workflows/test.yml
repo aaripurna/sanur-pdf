@@ -40,6 +40,11 @@ jobs:
       #                  font is embedded, subsetted and mapped back to Unicode
       #   fribidi        the reference implementation the bidirectional algorithm is
       #                  compared against, character for character
+      #
+      # Two font packages carry PostScript outlines because the CFF checks search for a
+      # font rather than naming one, and neither package is guaranteed to exist: the first
+      # run of this workflow skipped all three CFF tests because the filename they looked
+      # for is macOS-only.
       - name: install verification tools
         if: runner.os == 'Linux'
         run: |
@@ -50,7 +55,8 @@ jobs:
             libfribidi-bin \
             libfribidi-dev \
             fonts-dejavu \
-            fonts-stix
+            fonts-stix \
+            fonts-texgyre
 
       - name: install verification tools
         if: runner.os == 'macOS'

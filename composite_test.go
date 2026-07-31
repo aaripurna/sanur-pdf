@@ -3,6 +3,8 @@ package sanur_test
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -446,23 +448,101 @@ func TestCompositeDocumentPassesGhostscript(t *testing.T) {
 func cffFont(t *testing.T, name string) core.Font {
 	t.Helper()
 
-	for _, path := range []string{
-		"/System/Library/Fonts/Supplemental/STIXGeneral.otf",
-		"/usr/share/fonts/opentype/stix/STIXGeneral.otf",
-	} {
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-
-		face, err := fonts.LoadTrueTypeFile(name, path)
-		if err != nil {
-			t.Fatalf("loading %s: %v", path, err)
-		}
-		return face
+	path := findCFFFont()
+	if path == "" {
+		t.Skip("no OpenType/CFF font found in the system font directories")
 	}
 
-	t.Skip("no system OpenType/CFF font available")
-	return nil
+	face, err := fonts.LoadTrueTypeFile(name, path)
+	if err != nil {
+		t.Fatalf("loading %s: %v", path, err)
+	}
+	return face
+}
+
+// findCFFFont searches the system font directories for a font with PostScript outlines.
+//
+// The directories are searched rather than a list of filenames being tried, because the
+// filenames are not stable. The first version of this looked for STIXGeneral.otf, which
+// exists on macOS and not on a Debian runner — Debian's fonts-stix ships the STIX Two
+// family under different names — so the whole CFF path silently went unchecked on Linux.
+// Asking the files what they are is the only version of this that keeps working.
+func findCFFFont() string {
+	roots := []string{
+		"/System/Library/Fonts",
+		"/System/Library/Fonts/Supplemental",
+		"/Library/Fonts",
+		"/usr/share/fonts",
+		"/usr/local/share/fonts",
+		"C:/Windows/Fonts",
+	}
+
+	var found string
+
+	for _, root := range roots {
+		if found != "" {
+			break
+		}
+
+		// The error is ignored: a root that does not exist on this platform is the
+		// normal case, not a problem.
+		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return nil //nolint:nilerr // an unreadable subtree is not fatal
+			}
+			if !strings.EqualFold(filepath.Ext(path), ".otf") {
+				return nil
+			}
+			if !isCFFOutlines(path) {
+				return nil
+			}
+			// Latin and Greek, which is what the tests draw from it.
+			if !covers(path, 'A', '\u039e') {
+				return nil
+			}
+
+			found = path
+			return filepath.SkipAll
+		})
+	}
+
+	return found
+}
+
+// isCFFOutlines reports whether a font file carries PostScript outlines, by reading the
+// four bytes that say so.
+func isCFFOutlines(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	var tag [4]byte
+	if _, err := io.ReadFull(file, tag[:]); err != nil {
+		return false
+	}
+	// "OTTO" marks a CFF-based OpenType font; a TrueType one starts 00 01 00 00.
+	return string(tag[:]) == "OTTO"
+}
+
+// covers reports whether a font has a glyph for every rune given.
+func covers(path string, runes ...rune) bool {
+	face, err := fonts.LoadTrueTypeFile("coverage-probe", path)
+	if err != nil {
+		return false
+	}
+
+	source, ok := fonts.GlyphSourceOf(face)
+	if !ok {
+		return false
+	}
+	for _, r := range runes {
+		if _, has := source.GlyphID(r); !has {
+			return false
+		}
+	}
+	return true
 }
 
 func TestCFFFontIsEmbeddedAsAPostScriptCIDFont(t *testing.T) {

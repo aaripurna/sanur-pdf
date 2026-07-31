@@ -1543,3 +1543,68 @@ func (brokenSubsetThatWorks) GlyphWidth(uint16) int         { return 500 }
 func (brokenSubsetThatWorks) Subset(map[uint16]bool) (fonts.Subset, error) {
 	return fonts.Subset{Data: []byte("not really a font, but not empty")}, nil
 }
+
+// sharedGlyphFont draws two different characters with one glyph.
+//
+// That is not contrived: Arabic yeh and Farsi yeh are distinct characters that most fonts
+// draw identically in medial position, so they share a glyph. Identity-H addresses
+// glyphs, which means the two characters share a code and only one of them can be named
+// in ToUnicode — a limit of the encoding rather than something to fix. What can be fixed
+// is the answer depending on which page happened to be drawn last, and a stub pins that
+// rule without depending on which fonts a machine has installed.
+type sharedGlyphFont struct{ stubFace }
+
+func (sharedGlyphFont) Program() fonts.FontProgram {
+	return fonts.FontProgram{BaseName: "Shared", Composite: true, DefaultWidth: 500}
+}
+
+// Both 'A' and 'B' resolve to glyph 7; everything else gets its own.
+func (sharedGlyphFont) GlyphID(r rune) (uint16, bool) {
+	if r == 'A' || r == 'B' {
+		return 7, true
+	}
+	return uint16(r), true
+}
+
+func (sharedGlyphFont) SubstituteGlyph() uint16 { return 0 }
+func (sharedGlyphFont) GlyphWidth(uint16) int   { return 500 }
+
+func (sharedGlyphFont) Subset(map[uint16]bool) (fonts.Subset, error) {
+	return fonts.Subset{Data: []byte("stand-in for a font program")}, nil
+}
+
+func TestGlyphSharedByTwoCharactersIsMappedToTheFirstOne(t *testing.T) {
+	// Whichever character is drawn first is the one ToUnicode names, so the mapping does
+	// not depend on the order the pages happened to be drawn in.
+	for _, tc := range []struct {
+		text string
+		want string
+	}{
+		{"AB", "<0041>"},
+		{"BA", "<0042>"},
+	} {
+		b := render.NewBuilder(render.Metadata{}, false)
+		canvas := b.NewPage(a4)
+
+		canvas.DrawText(tc.text, core.Position{X: 10, Y: 20}, core.TextStyle{
+			Font: sharedGlyphFont{stubFace{"Shared"}}, Size: 11, Color: core.RGB(0, 0, 0),
+		})
+		if err := canvas.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		data, err := b.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		entry := regexp.MustCompile(`<0007> (<[0-9A-F]+>)`).FindSubmatch(data)
+		if entry == nil {
+			t.Errorf("drawing %q: glyph 7 has no ToUnicode entry:\n%s", tc.text, data)
+			continue
+		}
+		if got := string(entry[1]); got != tc.want {
+			t.Errorf("drawing %q: glyph 7 maps to %s, want %s", tc.text, got, tc.want)
+		}
+	}
+}
