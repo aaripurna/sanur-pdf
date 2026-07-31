@@ -11,6 +11,13 @@ COVERPKG := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./
 test:
 	go test $(PKGS)
 
+# race matters more here than in most libraries: fonts and themes are meant to be shared
+# between documents generated concurrently, and that promise is only worth making if it is
+# checked.
+.PHONY: race
+race:
+	go test -race $(PKGS)
+
 .PHONY: vet
 vet:
 	gofmt -l .
@@ -37,7 +44,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report charts themed print scripts
+examples: invoice images report charts themed print scripts concurrent
 
 .PHONY: invoice
 invoice:
@@ -70,6 +77,11 @@ themed:
 .PHONY: scripts
 scripts:
 	go run ./examples/scripts scripts.pdf
+
+# Generates 64 invoices in parallel and the same 64 one at a time, then compares them.
+.PHONY: concurrent
+concurrent:
+	go run ./examples/concurrent concurrent.pdf
 
 .PHONY: clean
 clean:

@@ -299,3 +299,96 @@ func (p *PathShape) Draw(canvas core.Canvas, available core.Size) {
 }
 
 var _ core.Element = (*PathShape)(nil)
+
+// PageRef prints the page number a named destination landed on.
+//
+// This is the other half of a table of contents. A link makes an entry clickable, but
+// a printed document still needs to say "page 7" — and that number cannot be known
+// while the entry is being laid out, because the section it points at has not been
+// placed yet. Generation resolves it by laying the document out until the destinations
+// stop moving, then rendering with the answers in hand.
+//
+// The destination is a name registered by an Anchor or a Bookmark, so a bookmarked
+// section needs no separate anchor:
+//
+//	c.Item().PageRef("bookmark:Methods")
+type PageRef struct {
+	// Destination is the name to look up.
+	Destination string
+
+	// Format may contain {page}. An empty format is just the number.
+	Format string
+
+	Style core.TextStyle
+	Align core.HorizontalAlign
+
+	// Unresolved is drawn while the destination's page is still unknown, which it is
+	// on every pass but the last. It has to occupy roughly the width the number will,
+	// or the layout settles at one width and renders at another.
+	Unresolved string
+
+	ctx  core.PageContext
+	text *Text
+}
+
+// NewPageRef builds a label showing the page a destination landed on.
+func NewPageRef(destination string, style core.TextStyle) *PageRef {
+	return &PageRef{Destination: destination, Style: style}
+}
+
+func (p *PageRef) SetPageContext(ctx core.PageContext) {
+	p.ctx = ctx
+	// The rendered string changes, so the cached line layout is no longer valid.
+	p.text = nil
+}
+
+// placeholder is what stands in for an unresolved number.
+//
+// Two digits, because that is the width of the great majority of page numbers and the
+// resolution loop converges faster when the placeholder is close to the answer. A
+// single space would let a contents list lay out narrow and then render wide, taking
+// an extra iteration to settle — or not settling at all if the change tips a line.
+const placeholder = "00"
+
+func (p *PageRef) resolve() *Text {
+	if p.text != nil {
+		return p.text
+	}
+
+	number := p.Unresolved
+	if number == "" {
+		number = placeholder
+	}
+	if page, ok := p.ctx.PageOf(p.Destination); ok {
+		number = strconv.Itoa(page)
+	}
+
+	content := number
+	if p.Format != "" {
+		content = strings.ReplaceAll(p.Format, "{page}", number)
+	}
+
+	p.text = NewText(content, p.Style)
+	p.text.Align = p.Align
+	return p.text
+}
+
+func (p *PageRef) Measure(available core.Size) core.SpacePlan {
+	return p.resolve().Measure(available)
+}
+
+func (p *PageRef) Draw(canvas core.Canvas, available core.Size) {
+	p.resolve().Draw(canvas, available)
+}
+
+func (p *PageRef) ResetState(hard bool) {
+	if hard {
+		p.text = nil
+	}
+}
+
+var (
+	_ core.Element         = (*PageRef)(nil)
+	_ core.ContextAware    = (*PageRef)(nil)
+	_ core.StateResettable = (*PageRef)(nil)
+)

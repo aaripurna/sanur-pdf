@@ -18,6 +18,22 @@ import (
 const MaxPagesPerSection = 5000
 
 // Document is a PDF under construction.
+//
+// # Concurrency
+//
+// A Document is not safe for concurrent use, and neither is anything reachable from one.
+// Build and generate each document from a single goroutine.
+//
+// The reason is not just unguarded maps in the writer: elements carry pagination state.
+// A column remembers which item it reached and a text block which line, because that is
+// what lets content resume on the next sheet. Two goroutines drawing the same element
+// tree would interleave that progress and produce two wrong documents rather than one
+// error. It is also why EveryPage takes a function instead of a prepared tree.
+//
+// Generating several documents at once is fine, and is what a server does. Fonts, themes
+// and decoded images may be shared freely between them: a fonts.Registry is safe for
+// concurrent use, a loaded face guards its own metric caches, and a theme is read-only
+// once parsed. Load those once at startup and hand them to as many documents as you like.
 type Document struct {
 	pages []*Page
 	meta  render.Metadata
@@ -125,13 +141,13 @@ func (d *Document) Bytes() ([]byte, error) {
 		return nil, fmt.Errorf("sanur: document has no pages; call Page first")
 	}
 
-	total, err := d.countPages()
+	resolved, err := d.resolve()
 	if err != nil {
 		return nil, err
 	}
 
 	builder := render.NewBuilder(d.meta, d.compress)
-	if _, err := d.layout(builder, total); err != nil {
+	if _, err := d.layout(builder, resolved); err != nil {
 		return nil, err
 	}
 	return builder.Bytes()
@@ -149,36 +165,79 @@ func (d *Document) Write(path string) error {
 	return nil
 }
 
-// countPages determines the page total by laying the document out onto a canvas
-// that discards everything.
-//
-// A "page N of M" label cannot be rendered until M is known, and M cannot be
-// known until the document has been laid out — but the label's own width affects
-// the layout. The loop below resolves that by laying out repeatedly until the
-// count stops changing. In practice it settles on the second pass, since only a
-// digit count changes; the iteration limit exists for the pathological case where
-// a document oscillates between two totals, in which case the last count is used
-// and the document is still valid, just possibly with an off-by-one label.
-func (d *Document) countPages() (int, error) {
-	const maxAttempts = 3
+// pageFacts is what a page needs to know about the document as a whole, and cannot
+// know while it is being laid out.
+type pageFacts struct {
+	// total is the sheet count, zero until it has been established.
+	total int
 
-	total := 0
+	// destinations maps a named destination to the sheet it landed on.
+	destinations map[string]int
+}
+
+// resolve establishes the page total and the page of every named destination, by
+// laying the document out onto a canvas that discards everything.
+//
+// Neither can be known before the document has been laid out, and printing either
+// changes the widths involved, which can change the layout — a table of contents that
+// grows a column of page numbers may itself push a section onto the next sheet. So the
+// answers are found by repetition: lay out, see what the facts are, lay out again, and
+// stop when nothing moves.
+//
+// In practice it settles on the second or third pass, since only a digit count changes.
+// The limit exists for a document that oscillates, which then renders with the last
+// answer — still a valid file, possibly with a label off by one. That is a far better
+// outcome than refusing to generate.
+func (d *Document) resolve() (pageFacts, error) {
+	const maxAttempts = 5
+
+	facts := pageFacts{destinations: map[string]int{}}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		count, err := d.layout(nil, total)
+		found := map[string]int{}
+
+		count, err := d.layoutWith(nil, facts, found)
 		if err != nil {
-			return 0, err
+			return facts, err
 		}
-		if count == total {
+
+		settled := count == facts.total && samePages(facts.destinations, found)
+		facts = pageFacts{total: count, destinations: found}
+
+		if settled {
 			break
 		}
-		total = count
 	}
-	return total, nil
+
+	return facts, nil
+}
+
+// samePages reports whether two destination maps agree.
+func samePages(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, page := range a {
+		if b[name] != page {
+			return false
+		}
+	}
+	return true
 }
 
 // layout runs the whole document through the engine, drawing onto builder or, if
 // builder is nil, onto a discard canvas. It returns the number of sheets.
-func (d *Document) layout(builder *render.Builder, totalPages int) (int, error) {
+func (d *Document) layout(builder *render.Builder, facts pageFacts) (int, error) {
+	return d.layoutWith(builder, facts, nil)
+}
+
+// layoutWith is layout, additionally recording where each destination landed when
+// record is non-nil.
+func (d *Document) layoutWith(
+	builder *render.Builder,
+	facts pageFacts,
+	record map[string]int,
+) (int, error) {
 	pageNumber := 0
 
 	for index, page := range d.pages {
@@ -187,7 +246,7 @@ func (d *Document) layout(builder *render.Builder, totalPages int) (int, error) 
 		// half-consumed and the real pass would render only the remainder.
 		page.reset()
 
-		produced, err := d.layoutPage(builder, page, &pageNumber, totalPages)
+		produced, err := d.layoutPage(builder, page, &pageNumber, facts, record)
 		if err != nil {
 			return 0, fmt.Errorf("sanur: page definition %d: %w", index+1, err)
 		}
@@ -204,7 +263,8 @@ func (d *Document) layoutPage(
 	builder *render.Builder,
 	page *Page,
 	pageNumber *int,
-	totalPages int,
+	facts pageFacts,
+	record map[string]int,
 ) (int, error) {
 	inner := page.contentArea()
 	if inner.Width <= 0 || inner.Height <= 0 {
@@ -227,7 +287,11 @@ func (d *Document) layoutPage(
 		*pageNumber++
 		sheets++
 
-		ctx := core.PageContext{PageNumber: *pageNumber, TotalPages: totalPages}
+		ctx := core.PageContext{
+			PageNumber:   *pageNumber,
+			TotalPages:   facts.total,
+			Destinations: facts.destinations,
+		}
 
 		// The header and footer are redrawn in full on every sheet, so any
 		// progress they recorded on the previous one has to be rewound. Skipping
@@ -264,6 +328,9 @@ func (d *Document) layoutPage(
 		if err != nil {
 			return 0, err
 		}
+		if record != nil {
+			canvas = recordDestinations(canvas, *pageNumber, record)
+		}
 
 		d.drawSheet(canvas, page, inner, furniture, contentPlan.Size, sheets == 1)
 
@@ -292,6 +359,37 @@ func (d *Document) layoutPage(
 			stalled = 0
 		}
 	}
+}
+
+// recordDestinations wraps a canvas so that every named destination drawn on it is
+// noted against the sheet it landed on.
+//
+// The document is the only thing that knows the sheet number, which is why this sits
+// here rather than in the canvas.
+//
+// The first registration of a name wins. In a valid document that never comes up, since
+// a name may be registered only once and the writer reports a duplicate as an error —
+// furniture redrawn on later sheets has its anchors suppressed before reaching here, so
+// a header anchor arrives exactly once. Keeping the first is simply the stable choice
+// for a document that is not valid yet.
+func recordDestinations(canvas core.Canvas, page int, into map[string]int) core.Canvas {
+	return destinationRecorder{Canvas: canvas, page: page, pages: into}
+}
+
+type destinationRecorder struct {
+	core.Canvas
+
+	page  int
+	pages map[string]int
+}
+
+func (r destinationRecorder) Destination(name string, pos core.Position) {
+	if name != "" {
+		if _, seen := r.pages[name]; !seen {
+			r.pages[name] = r.page
+		}
+	}
+	r.Canvas.Destination(name, pos)
 }
 
 // newCanvas returns a canvas for one sheet plus the function that finalises it.

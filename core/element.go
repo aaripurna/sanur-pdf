@@ -84,6 +84,26 @@ type PageContext struct {
 
 	// TotalPages is zero during the counting pass.
 	TotalPages int
+
+	// Destinations maps each named destination to the sheet it landed on, and is
+	// empty until the pass that resolves it.
+	//
+	// This is what lets a table of contents print page numbers. A destination's page
+	// is only known once the document has been laid out, and printing it changes the
+	// widths involved, so it is resolved the same way the page total is: by laying out
+	// repeatedly until the answer stops moving.
+	Destinations map[string]int
+}
+
+// PageOf returns the sheet a named destination landed on, and whether it is known.
+//
+// It reports false during the passes that have not resolved the destinations yet, and
+// for a name nothing ever registered. Callers should render something harmless in that
+// case rather than treating it as an error: the first pass has to succeed for there to
+// be a second.
+func (c PageContext) PageOf(name string) (int, bool) {
+	page, ok := c.Destinations[name]
+	return page, ok && page > 0
 }
 
 // ResetTree hard- or soft-resets an element and everything beneath it.

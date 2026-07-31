@@ -96,12 +96,19 @@ func (r *Row) resolveWidths(available core.Size) ([]float64, bool) {
 	// Auto items are measured against everything the constants and spacing left
 	// behind. Offering each of them the same budget can overcommit when several
 	// are present, which the final fit check below catches.
+	//
+	// The natural size is asked for rather than the measured one, and for the same
+	// reason a row resolves its height that way: an element that fills whatever it is
+	// offered answers Measure with the whole budget, which is what filling means. An
+	// auto item is asking "how much do you need", so a right-aligned figure — an
+	// AutoItem().AlignRight() at the end of a total row — would otherwise claim the
+	// entire row and squeeze the label beside it down to one character per line.
 	autoBudget := math.Max(0, available.Width-fixed)
 	for i, item := range r.Items {
 		if item.Sizing != RowAuto {
 			continue
 		}
-		plan := core.MeasureChild(item.Element, core.Size{
+		plan := core.NaturalSizeOf(item.Element, core.Size{
 			Width:  autoBudget,
 			Height: available.Height,
 		})

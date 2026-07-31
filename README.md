@@ -183,13 +183,26 @@ forwards** — which is what a table of contents needs. A name that never gets
 registered, or one registered twice, is reported as an error rather than becoming
 a dead or ambiguous link.
 
-Two things to know:
+**A table of contents can print page numbers.** `PageRef` renders the sheet a named
+destination landed on, so an entry can be both clickable and printable:
 
-- **A link draws nothing.** Colour or underline the text yourself if it should
-  look like a link; a document may reasonably want neither.
-- **A table of contents cannot show page numbers yet.** Destinations resolve after
-  layout, so the page a section landed on is not available to the text that
-  describes it. The entries are clickable; they just cannot say "page 7".
+```go
+c.Item().Row(func(r *sanur.RowBuilder) {
+	r.RelativeItem(1).LinkTo("bookmark:Methods").Text("Methods")
+	r.ConstantItem(26).AlignRight().PageRef("bookmark:Methods")
+})
+```
+
+That number is not known while the entry is being laid out — the section it points at
+has not been placed yet — so generation resolves it by laying the document out, seeing
+where the destinations landed, and laying it out again. It repeats until nothing moves,
+because printing the numbers changes the widths involved and a contents list that grows
+a column can itself push a section onto the next sheet. A name nothing registers renders
+as a placeholder rather than failing, so a list can name a section that has not been
+written yet.
+
+One thing to know: **a link draws nothing.** Colour or underline the text yourself if it
+should look like a link; a document may reasonably want neither.
 
 ## Theming from JSON
 
@@ -758,17 +771,19 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 ## Examples
 
 ```
-make examples     # or: make invoice / images / report / charts / themed / print / scripts
+make examples     # or: make invoice / images / report / charts / themed
+                  #     make print / scripts / concurrent
 ```
 
 | Example | What it covers |
 | --- | --- |
 | `examples/invoice` | A table that paginates with a repeating header row, a DRAFT overlay, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
-| `examples/report` | `EveryPage` furniture, a clickable table of contents with bookmarks, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/report` | `EveryPage` furniture, a table of contents that is clickable *and* prints the page each section landed on, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
+| `examples/concurrent` | 64 invoices generated in parallel from one shared theme, compared byte for byte against the same 64 generated one at a time |
 | `examples/scripts` | Twenty languages from one registered font — including Hebrew, Arabic, Persian and Urdu — subsetted 20× smaller than the files it came from, with the same text in a built-in font for comparison |
 
 The report example is the one to read for complex layout. There is no chart
@@ -792,6 +807,44 @@ Output is deterministic: sanur never reads the clock and never iterates a map
 while writing, so the same document always produces identical bytes. Supply
 `CreationDate` yourself if you want a timestamp.
 
+## Concurrency
+
+**A `Document` is not safe for concurrent use, and neither is anything reachable from
+one.** Build and generate each document from a single goroutine.
+
+The reason is not just unguarded maps in the writer. Elements carry pagination state — a
+column remembers which item it reached, a text block which line — because that is what
+lets content resume on the next sheet. Two goroutines drawing the same element tree would
+interleave that progress and produce two wrong documents rather than one error. It is the
+same reason `EveryPage` takes a function instead of a prepared tree.
+
+**Generating several documents at once is fine**, which is what a server does. Fonts,
+themes and decoded images may be shared freely between them:
+
+```go
+// Once, at startup.
+var (
+	brand = must(theme.Load("brand.json"))
+	inter = must(fonts.LoadTrueTypeFile("Inter", "Inter-Regular.ttf"))
+)
+
+// Per request.
+func handler(w http.ResponseWriter, r *http.Request) {
+	doc := sanur.New()
+	// ... build it, using brand and inter ...
+	data, err := doc.Bytes()
+}
+```
+
+A `fonts.Registry` is safe for concurrent use, a loaded face guards its own metric caches
+and its scratch buffer, and a theme is read-only once parsed. The test suite generates
+sixteen documents at once from a shared font and theme under `-race`, and checks that each
+comes out byte-identical to the same document generated on its own — a corrupted shared
+cache would change what another goroutine measured.
+
+`examples/concurrent` is the runnable version: 64 invoices, generated in parallel and then
+one at a time, with the two sets compared byte for byte.
+
 ## Errors
 
 The fluent API cannot fail — no method returns an error — and layout problems
@@ -809,25 +862,26 @@ stall rather than filling a disk.
 
 ```
 make test         # run the suite
+make race         # run it under the race detector
 make cover        # per-package statement coverage
 make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-604 tests across nine packages, at 95.3% statement coverage:
+619 tests across nine packages, at 95.4% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
-| `core` | 272 | 269 | 98.9% |
+| `core` | 274 | 271 | 98.9% |
 | `text` | 359 | 349 | 97.2% |
-| `sanur` (root) | 452 | 434 | 96.0% |
+| `sanur` (root) | 472 | 454 | 96.2% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `elements` | 706 | 672 | 95.2% |
+| `elements` | 726 | 693 | 95.5% |
 | `render` | 588 | 557 | 94.7% |
 | `fonts` | 502 | 473 | 94.2% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
-| **Total** | **3723** | **3548** | **95.3%** |
+| **Total** | **3765** | **3591** | **95.4%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -897,6 +951,11 @@ What the suite checks, and why in that particular way:
   an assertion that no glyph was substituted with a question mark.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
+- **The concurrency promise is tested rather than asserted.** Sixteen documents are
+  generated at once from a shared font and theme under `-race`, and each is compared with
+  the same document generated alone. Removing the lock from the glyph cache or from the
+  font registry makes the race detector fire, which is the check that the tests are doing
+  something.
 
 Tests that need a system font or an external tool skip cleanly when it is
 missing, so the suite passes on a bare machine.
@@ -911,7 +970,6 @@ missing, so the suite passes on a bare machine.
   whole, while TrueType outlines are subsetted
 - Multi-column text flow
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
-- Page numbers in a table of contents (destinations resolve after layout)
 - Annotations beyond links: notes, highlights, form fields
 - Tagged and accessible output (PDF/UA)
 - Encryption, and PDF/A conformance

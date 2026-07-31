@@ -620,17 +620,48 @@ func TestApplyPageContextReachesEveryDescendant(t *testing.T) {
 	leaf := &recorder{}
 	root := &recorder{children: []core.Element{leaf, plainElement{}}}
 
-	ctx := core.PageContext{PageNumber: 3, TotalPages: 7}
+	ctx := core.PageContext{
+		PageNumber:   3,
+		TotalPages:   7,
+		Destinations: map[string]int{"methods": 4},
+	}
 	core.ApplyPageContext(root, ctx)
 
-	if leaf.ctx != ctx {
-		t.Errorf("leaf context = %+v, want %+v", leaf.ctx, ctx)
-	}
-	if root.ctx != ctx {
-		t.Errorf("root context = %+v, want %+v", root.ctx, ctx)
+	// Compared field by field: PageContext carries a map, so it is not comparable with
+	// ==, and the map is the part that has to arrive by reference rather than be copied.
+	for name, got := range map[string]core.PageContext{"leaf": leaf.ctx, "root": root.ctx} {
+		if got.PageNumber != ctx.PageNumber || got.TotalPages != ctx.TotalPages {
+			t.Errorf("%s context = %+v, want %+v", name, got, ctx)
+		}
+		if page, ok := got.PageOf("methods"); !ok || page != 4 {
+			t.Errorf("%s did not receive the destinations", name)
+		}
 	}
 
 	core.ApplyPageContext(nil, ctx)
+}
+
+func TestPageOfReportsWhatIsKnown(t *testing.T) {
+	// The passes before resolution have no answers, and an element has to render
+	// something harmless rather than treat that as an error: the first pass must
+	// succeed for there to be a second.
+	var empty core.PageContext
+	if _, ok := empty.PageOf("anything"); ok {
+		t.Error("an unresolved context reported a page")
+	}
+
+	ctx := core.PageContext{Destinations: map[string]int{"known": 9, "never drawn": 0}}
+
+	if page, ok := ctx.PageOf("known"); !ok || page != 9 {
+		t.Errorf("PageOf(known) = %d, %v", page, ok)
+	}
+	if _, ok := ctx.PageOf("missing"); ok {
+		t.Error("PageOf reported a page for a name that was never registered")
+	}
+	// A recorded zero is not a page: sheets are numbered from one.
+	if _, ok := ctx.PageOf("never drawn"); ok {
+		t.Error("PageOf treated sheet zero as a real page")
+	}
 }
 
 func TestMeasureChildTreatsNilAsEmpty(t *testing.T) {

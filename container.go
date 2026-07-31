@@ -344,6 +344,32 @@ func (c *Container) PageNumber(format string) {
 	c.install(elements.NewPageNumber(format, c.style))
 }
 
+// PageRef prints the page number a named destination landed on, for a table of
+// contents.
+//
+// The name is whatever an Anchor or a Bookmark registered, so a bookmarked section
+// needs no separate anchor:
+//
+//	c.Item().Row(func(r *sanur.RowBuilder) {
+//		r.RelativeItem(1).LinkTo("bookmark:Methods").Text("Methods")
+//		r.ConstantItem(24).AlignRight().PageRef("bookmark:Methods")
+//	})
+//
+// Resolving the number takes an extra layout pass, since a section's page is not known
+// while the entry pointing at it is being placed. A name nothing registers renders as a
+// placeholder rather than failing, so a contents list can name a section that has not
+// been written yet.
+func (c *Container) PageRef(destination string) {
+	c.install(elements.NewPageRef(destination, c.style))
+}
+
+// PageRefFormat is PageRef with surrounding text, where {page} stands for the number.
+func (c *Container) PageRefFormat(destination, format string) {
+	ref := elements.NewPageRef(destination, c.style)
+	ref.Format = format
+	c.install(ref)
+}
+
 // Image draws a decoded image, scaled to the available width by default.
 func (c *Container) Image(img core.Image) {
 	c.install(&elements.Image{Source: img, Fit: elements.FitWidth})

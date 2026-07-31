@@ -48,6 +48,7 @@ var examples = []struct {
 	{name: "charts", pkg: "./examples/charts", minPages: 5},
 	{name: "themed", pkg: "./examples/themed", minPages: 1},
 	{name: "print", pkg: "./examples/print", minPages: 1, maxPages: 1},
+	{name: "concurrent", pkg: "./examples/concurrent", minPages: 1},
 	{
 		name: "scripts", pkg: "./examples/scripts",
 		minPages: 3, maxPages: 3,

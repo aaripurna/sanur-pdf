@@ -254,11 +254,22 @@ func TestClipReportsLessThanTheBoxForSmallContent(t *testing.T) {
 // translateRecorder captures the vertical offsets applied while drawing.
 type translateRecorder struct {
 	render_noop
+	xs []float64
 	ys []float64
 }
 
 func (r *translateRecorder) Translate(p core.Position) {
+	r.xs = append(r.xs, p.X)
 	r.ys = append(r.ys, p.Y)
+}
+
+func (r *translateRecorder) sawTranslateX(want float64) bool {
+	for _, x := range r.xs {
+		if x > want-0.01 && x < want+0.01 {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *translateRecorder) sawTranslateY(want float64) bool {
@@ -374,6 +385,41 @@ func TestNaturalSizeForwardsThroughExtend(t *testing.T) {
 	plan := row.Measure(core.Size{Width: 200, Height: 900})
 
 	closeTo(t, "height", plan.Size.Height, 22)
+}
+
+func TestAutoWidthComesFromTheNaturalSize(t *testing.T) {
+	// An auto item asks "how much do you need". An element that fills whatever it is
+	// offered answers Measure with the whole budget, so measuring it would let one auto
+	// item take the entire row.
+	//
+	// The shape that found this is the total line of an invoice: a label on the left and
+	// a right-aligned figure beside it. The figure claimed the whole row and the label
+	// was squeezed to one character per line — a layout that succeeds and looks broken.
+	aligned := &elements.Aligned{
+		Horizontal: core.AlignRight,
+		Child:      &fixedElement{w: 30, h: 10},
+	}
+
+	row := elements.NewRow(0,
+		elements.Relative(1, &fixedElement{w: 20, h: 10}),
+		elements.Auto(aligned),
+	)
+
+	plan := row.Measure(core.Size{Width: 200, Height: 100})
+	if plan.Wrapped() {
+		t.Fatalf("row wrapped: %s", plan.WrapReason)
+	}
+
+	// The auto item takes what its content needs, and the relative item gets the rest.
+	// Drawing is what reveals the widths, since Measure reports only the total.
+	// Drawing is what reveals the widths, since Measure reports only the total. The
+	// auto item takes what its content needs, so it starts at 200 - 30.
+	rec := &translateRecorder{}
+	row.Draw(rec, core.Size{Width: 200, Height: 100})
+
+	if !rec.sawTranslateX(170) {
+		t.Errorf("expected the auto item at x=170, got offsets %v", rec.xs)
+	}
 }
 
 func TestNaturalSizeOfPlainElementFallsBackToMeasure(t *testing.T) {

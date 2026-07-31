@@ -129,19 +129,21 @@ func main() {
 						Row(func(r *sanur.RowBuilder) {
 							r.RelativeItem(1).StyledText(entry.title,
 								sanur.TextStyle().Size(11).Color(accent))
-							// A guillemet rather than an arrow: WinAnsi has no
-							// arrows, and U+2192 would be substituted with a
-							// question mark.
-							r.AutoItem().AlignMiddle().StyledText("\u00bb",
-								sanur.TextStyle().Size(9).Color(accent))
+							// The page the section landed on. It is not known while
+							// this row is being laid out — the section has not been
+							// placed yet — so generation resolves it in an extra pass
+							// and repeats until the answers stop moving.
+							r.ConstantItem(26).AlignRight().AlignMiddle().
+								DefaultTextStyle(sanur.TextStyle().Size(11).Color(accent)).
+								PageRef(entry.dest)
 						})
 				}
 			})
 
 			c.Item().StyledText(
-				"Section titles also appear in the reader's outline panel. Page "+
-					"numbers are absent from this list on purpose: resolving a "+
-					"destination to a page number during layout is not yet supported.",
+				"Each entry is clickable, prints the page its section landed on, and "+
+					"appears in the reader's outline panel. The page numbers come from "+
+					"the layout rather than from counting by hand.",
 				sanur.TextStyle().Size(8).Color(muted))
 		})
 	})
