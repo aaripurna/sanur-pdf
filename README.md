@@ -1038,7 +1038,10 @@ What the suite checks, and why in that particular way:
   structure is *also* read back out of the object graph. Both are needed and neither
   suffices: the hand-written tests passed while the document failed six conformance rules,
   and they are what pin the behaviour a validator does not describe — that reversing the
-  parent-tree array, or sharing the sequence counter across pages, is a failure.
+  parent-tree array, or sharing the sequence counter across pages, is a failure. CI runs
+  veraPDF on macOS only, since Debian does not package it and its installer is coupled to
+  identifiers that change between versions; the Linux job skips that one check and says so
+  in the run summary.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
 - **The concurrency promise is tested rather than asserted.** Sixteen documents are
