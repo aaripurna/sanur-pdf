@@ -1,0 +1,103 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # Both platforms report, rather than the first failure cancelling the other. The
+      # two are not interchangeable here: which fonts exist decides which checks run,
+      # and a failure on one is worth seeing next to a pass on the other.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The suite verifies output by handing it to real implementations rather than only
+      # inspecting bytes it wrote itself. Every one of these skips cleanly when absent,
+      # which is exactly why they have to be installed: a runner without them would look
+      # green while checking a great deal less.
+      #
+      #   ghostscript    parses the whole document and rejects a structurally plausible
+      #                  file that no reader would open
+      #   poppler-utils  pdftotext proves the text is text; pdffonts proves an embedded
+      #                  font is embedded, subsetted and mapped back to Unicode
+      #   fribidi        the reference implementation the bidirectional algorithm is
+      #                  compared against, character for character
+      - name: install verification tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ghostscript \
+            poppler-utils \
+            fribidi \
+            fonts-dejavu \
+            fonts-stix
+
+      - name: install verification tools
+        if: runner.os == 'macOS'
+        run: brew install ghostscript poppler fribidi
+
+      # gofmt and go vet. The target fails on unformatted files rather than listing them.
+      - name: vet
+        run: make vet
+
+      - name: build
+        run: go build ./...
+
+      # Verbose, and kept, so the next step can report what did not run.
+      - name: test
+        run: |
+          set -o pipefail
+          go test -count=1 -v ./... 2>&1 | tee test.log
+
+      # A skipped check is the failure mode this project keeps running into: an assertion
+      # that reads like it works and cannot fire is worse than no assertion. Skips are
+      # legitimate — a font carrying Arabic presentation forms is not installed everywhere
+      # — but which ones skipped decides how much a green run verified, so they go in the
+      # run summary rather than staying buried in the log.
+      - name: report skipped checks
+        if: always()
+        run: |
+          go run ./scripts/skipreport test.log | tee skipped.txt
+
+          {
+            echo "### Skipped on ${{ matrix.os }}"
+            echo
+            echo '```'
+            cat skipped.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Fonts and themes are meant to be shared between documents generated
+      # concurrently. That promise is only worth making if it is checked.
+      - name: race
+        run: make race
+
+      - name: coverage
+        run: |
+          make cover | tee coverage.txt
+          {
+            echo "### Coverage on ${{ matrix.os }}"
+            echo
+            echo '```'
+            sed -n '/^PACKAGE/,$p' coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

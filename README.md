@@ -863,12 +863,18 @@ stall rather than filling a disk.
 ```
 make test         # run the suite
 make race         # run it under the race detector
+make skipped      # list the checks that did not run, and why
 make cover        # per-package statement coverage
 make cover-html   # write coverage.html
-make example      # generate invoice.pdf
+make examples     # generate every example
 ```
 
-619 tests across nine packages, at 95.4% statement coverage:
+Every push and pull request runs all of it on Linux and macOS. Both are in the matrix
+because they are not interchangeable: which fonts a runner has decides which checks can
+run, and `make skipped` reports what did not into the run summary rather than letting a
+green tick stand for less than it appears to.
+
+619 tests across the nine library packages, at 95.4% statement coverage (the build tooling has its own tests and is measured separately):
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
@@ -958,7 +964,11 @@ What the suite checks, and why in that particular way:
   something.
 
 Tests that need a system font or an external tool skip cleanly when it is
-missing, so the suite passes on a bare machine.
+missing, so the suite passes on a bare machine — and `make skipped` says which ones did,
+with the reason each gave, because a suite that quietly checks half of what it claims is
+the failure this project keeps having to guard against. CI installs Ghostscript, poppler,
+fribidi and the DejaVu and STIX fonts so that as little as possible skips, and prints
+whatever still does.
 
 ## Not yet implemented
 

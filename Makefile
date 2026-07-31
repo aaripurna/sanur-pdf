@@ -1,26 +1,41 @@
-# Packages under test: everything that is not a standalone command.
+# LIBPKGS is everything that is not a standalone command: the examples, the coverage
+# reporter, the skip reporter and the table generator are all package main.
 #
-# The examples, the coverage reporter and the table generator are all package main —
-# binaries rather than library code — so including them would dilute the coverage figure
-# without saying anything about the engine. Filtering on the package name rather than on
-# the directory means a new tool needs no change here.
-PKGS := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./...)
+# It bounds what coverage is *measured over*, not what is tested. Including a binary would
+# dilute the figure without saying anything about the engine, but its tests still have to
+# run — the skip reporter has its own, and a tool that lies about what was checked is
+# worse than no tool. Filtering on the package name rather than the directory means a new
+# command needs no change here.
+LIBPKGS := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./...)
 COVERPKG := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./... | paste -sd, -)
 
 .PHONY: test
 test:
-	go test $(PKGS)
+	go test ./...
+
+# skipped lists the checks that did not run and why.
+#
+# Ghostscript, poppler, fribidi and a font carrying Arabic presentation forms are not
+# installed everywhere, and every check that needs one skips cleanly without it. Which
+# ones skipped decides how much a green run actually verified, so it is worth saying out
+# loud rather than leaving in a few thousand lines of verbose output.
+.PHONY: skipped
+skipped:
+	@go test -count=1 -v ./... 2>&1 | go run ./scripts/skipreport
 
 # race matters more here than in most libraries: fonts and themes are meant to be shared
 # between documents generated concurrently, and that promise is only worth making if it is
 # checked.
 .PHONY: race
 race:
-	go test -race $(PKGS)
+	go test -race ./...
 
+# vet fails on unformatted files rather than merely listing them: gofmt -l reports by
+# printing, and exits zero either way, so a plain invocation here would let badly
+# formatted code through a CI gate that looks like it is checking.
 .PHONY: vet
 vet:
-	gofmt -l .
+	@bad=$$(gofmt -l .); test -z "$$bad" || { echo "not gofmt'd:"; echo "$$bad" | sed 's/^/  /'; exit 1; }
 	go vet ./...
 
 # cover measures every package against every test, not just each package's own
@@ -29,7 +44,7 @@ vet:
 .PHONY: cover
 cover:
 	@go test -count=1 -covermode=atomic -coverpkg=$(COVERPKG) \
-		-coverprofile=coverage.out $(PKGS) \
+		-coverprofile=coverage.out $(LIBPKGS) \
 		| sed -e 's/ in github.com.*$$//' -e 's|github.com/aaripurna/||'
 	@echo
 	@go run ./scripts/coverreport coverage.out
