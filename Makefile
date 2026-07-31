@@ -1,8 +1,11 @@
-# Packages under test. The examples and scripts directories hold standalone
-# binaries rather than library code, so including them would dilute the coverage
-# figure without saying anything about the engine.
-PKGS := $(shell go list ./... | grep -Ev '/(examples|scripts)/')
-COVERPKG := $(shell go list ./... | grep -Ev '/(examples|scripts)/' | paste -sd, -)
+# Packages under test: everything that is not a standalone command.
+#
+# The examples, the coverage reporter and the table generator are all package main —
+# binaries rather than library code — so including them would dilute the coverage figure
+# without saying anything about the engine. Filtering on the package name rather than on
+# the directory means a new tool needs no change here.
+PKGS := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./...)
+COVERPKG := $(shell go list -f '{{if ne .Name "main"}}{{.ImportPath}}{{end}}' ./... | paste -sd, -)
 
 .PHONY: test
 test:

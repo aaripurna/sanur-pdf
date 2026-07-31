@@ -107,6 +107,7 @@ All paths below are relative to `github.com/aaripurna/sanur-pdf`.
 | `elements` | Layout primitives implementing `core.Element`. |
 | `chart` | Static line, area, bar, pie and donut charts. Depends only on `core` and `fonts`. |
 | `fonts` | Standard-14 metrics, WinAnsi encoding, TrueType loading and subsetting, the name registry. |
+| `text` | Bidirectional reordering (UAX #9) and Arabic shaping. Depends on nothing of sanur's. |
 | `theme` | Document styling loaded from JSON. Depends on `core`, `fonts` and `chart`. |
 | `render` | The PDF canvas, the discard canvas, image embedding. |
 | `internal/pdfobj` | PDF objects, streams, xref, trailer. |
@@ -586,24 +587,76 @@ charstrings and the private dictionaries they depend on — a different and much
 job than trimming a `glyf` table, where a subtle mistake produces a font that renders
 incorrectly rather than one that fails to load.
 
+### Right-to-left text
+
+Hebrew, Arabic, Persian and Urdu work. Two separate things make that so, and the
+`text` package holds both:
+
+```go
+c.Item().AlignRight().Text("السلام عليكم ورحمة الله")
+c.Item().AlignRight().Text("עמוד 12 מתוך 34")
+```
+
+**Reordering** is the Unicode Bidirectional Algorithm, UAX #9 — the paragraph level,
+the weak and neutral resolution rules, the implicit embedding levels, and the display
+rules including bracket mirroring and combining-mark order. It is verified character
+for character against `fribidi` over a corpus of real bidirectional text and several
+hundred generated strings.
+
+It is a real implementation rather than the obvious approximation, and the difference
+shows in one case that comes up constantly: a number inside a right-to-left clause.
+`"עמוד 12"` has to render as `12 דומע` — the Hebrew reversed, the number not — and
+getting there needs the actual embedding levels, because the digits sit two levels deep.
+Reversing runs by paragraph direction gets `" דומע12"`.
+
+**Shaping** gives Arabic its contextual letter forms. Arabic letters take one of four
+shapes depending on their neighbours, and text set without the substitution reads as a
+row of disconnected letters. Unicode assigns every form its own codepoint, so this is a
+table lookup rather than glyph-substitution machinery — including the lam-alef ligature,
+which Arabic orthography requires.
+
+Shaping runs before line breaking, because it changes which glyphs are drawn and so
+their widths. Reordering runs per wrapped line after it, because bidirectional order is
+defined per line. Both are automatic; there is nothing to switch on.
+
+Text stays searchable. A shaped letter is drawn from a presentation form, and the
+`/ToUnicode` map reports the base letter it stands for — so a search for the word as
+anyone would type it finds it, and copying a paragraph gives back what was written.
+
+Direction is detected from the content by Unicode's rule, and can be set explicitly for
+a paragraph that opens with something neutral:
+
+```go
+t := &elements.Text{Direction: text.DirectionRightToLeft}
+```
+
+Worth setting when an Arabic sentence begins with a figure or a Latin product name.
+Direction belongs to the paragraph, so a wrapped line starting with a Latin word inside
+an Arabic paragraph is still laid out right to left.
+
 ### What is not done
 
-Sanur maps each rune to one glyph and advances by its width. It applies none of a
-font's layout tables, which means:
-
-- **No bidirectional reordering.** Hebrew and Arabic draw in the order the runes
-  appear, so the glyphs are right and their order is not.
-- **No shaping.** Arabic letters will not join; Indic scripts will not reorder or
-  form conjuncts.
-- **No ligatures, small capitals, alternates or kerning pairs.**
-
-Those need a text-shaping engine (HarfBuzz's job), which is a larger undertaking than
-the rest of this library. Left-to-right alphabetic scripts — Latin in all its
-extensions, Greek, Cyrillic, and CJK where the font covers it — need none of it and
-work today.
+- **Indic scripts are not shaped.** Devanagari and its relatives need glyph reordering
+  and conjunct formation, which no codepoint substitution can express — that needs a
+  shaping engine, which is HarfBuzz's job and a larger undertaking than this library.
+- **Arabic vowel marks sit at the font's default offset** rather than centred over the
+  letter they belong to, which needs the font's positioning table.
+- **No ligatures beyond lam-alef, no small capitals, alternates or kerning pairs.**
+  Advance widths come from the font; its layout tables are ignored.
+- **The explicit bidirectional controls** (U+202A–U+202E, U+2066–U+2069) are treated as
+  removed rather than acted on, and mirroring covers the paired brackets rather than the
+  whole `Bidi_Mirrored` property.
+- **Improperly nested brackets and marks with no base character** are the two places the
+  reordering and `fribidi` disagree. Neither is text; for those the tests assert that
+  nothing is lost or invented rather than pinning an order.
 
 A rune the font has no glyph for becomes `?`: visibly wrong rather than silently
 missing, which is the same choice the built-in faces make.
+
+One limit belongs to the encoding rather than to any of this. Arabic yeh and Farsi yeh
+are different characters that most fonts draw with the same glyph in medial position,
+where they look identical. Identity-H addresses glyphs, so the two share one code and
+only one can be named in `/ToUnicode` — the first one the document uses.
 
 ## Colour, for screen and for print
 
@@ -716,7 +769,7 @@ make examples     # or: make invoice / images / report / charts / themed / print
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
-| `examples/scripts` | Twelve languages from one registered font, subsetted 24× smaller than the files it came from, and the same text in a built-in font for comparison |
+| `examples/scripts` | Twenty languages from one registered font — including Hebrew, Arabic, Persian and Urdu — subsetted 20× smaller than the files it came from, with the same text in a built-in font for comparison |
 
 The report example is the one to read for complex layout. There is no chart
 element, no stat-tile element and no sidebar element in sanur, and it shows why
@@ -761,19 +814,20 @@ make cover-html   # write coverage.html
 make example      # generate invoice.pdf
 ```
 
-577 tests across eight packages, at 95.1% statement coverage:
+604 tests across nine packages, at 95.3% statement coverage:
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 272 | 269 | 98.9% |
+| `text` | 359 | 349 | 97.2% |
 | `sanur` (root) | 452 | 434 | 96.0% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `elements` | 660 | 630 | 95.5% |
-| `render` | 586 | 555 | 94.7% |
+| `elements` | 706 | 672 | 95.2% |
+| `render` | 588 | 557 | 94.7% |
 | `fonts` | 502 | 473 | 94.2% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
-| **Total** | **3316** | **3155** | **95.1%** |
+| **Total** | **3723** | **3548** | **95.3%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -818,6 +872,12 @@ What the suite checks, and why in that particular way:
   is caught by the plates that come back inked. `cmyk(100, 0, 0, 100)` and
   `cmyk(0, 0, 0, 100)` are the same `#000000` in RGB and look identical in a
   viewer; only the separations tell them apart.
+- **Bidirectional reordering is checked against `fribidi`**, character for character,
+  over a corpus of real bidirectional text and 600 generated strings, in all three base
+  directions. It found four bugs no rendered page would have shown, the sharpest being
+  that `Run.Pos()` returns rune indices where the first version read byte offsets — which
+  left every Hebrew string containing a digit silently unreordered, with each word
+  individually correct.
 - **Non-Latin text is checked by extracting it again.** `pdftotext` reads the
   document back and the result is compared against the source strings, which fails if
   the glyph identifiers are wrong, if the `/ToUnicode` map is missing or malformed, or
@@ -845,8 +905,8 @@ missing, so the suite passes on a bare machine.
 
 - Standard-14 Times (its metrics are not reproduced here; register a TrueType
   font instead)
-- Text shaping and bidirectional reordering — right-to-left and complex scripts draw
-  in logical order with no joining, reordering or ligatures (see Fonts above)
+- Shaping for Indic and other complex scripts, and Arabic mark positioning
+  (Hebrew, Arabic, Persian and Urdu are handled — see Fonts above)
 - Subsetting of PostScript-outline fonts — a `.otf` with CFF outlines is embedded
   whole, while TrueType outlines are subsetted
 - Multi-column text flow

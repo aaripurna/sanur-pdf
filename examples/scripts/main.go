@@ -75,6 +75,19 @@ var samples = []sample{
 	{"Greek", "Ξεσκεπάζω την ψυχοφθόρα βδελυγμία", "Greek with accents"},
 }
 
+// rightToLeft needs more than a wider encoding: the characters have to be reordered for
+// display, and Arabic letters have to change shape according to their neighbours.
+var rightToLeft = []sample{
+	{"Hebrew", "דג סקרן שט בים", "reordered; Hebrew letters do not join"},
+	{"Hebrew", "עמוד 12 מתוך 34", "the numbers still read left to right"},
+	{"Arabic", "السلام عليكم ورحمة الله", "reordered and joined"},
+	{"Arabic", "الصفحة 12 من 34", "a number inside a right-to-left clause"},
+	{"Arabic", "لا إله إلا الله", "the lam-alef ligature"},
+	{"Arabic", "مرحبا Go بالعالم", "a Latin word inside Arabic"},
+	{"Persian", "سلام دنیا", "Persian letters, joined"},
+	{"Urdu", "ہیلو دنیا", "Urdu letters, joined"},
+}
+
 // symbols are characters WinAnsi lacks outright.
 var symbols = []struct{ glyph, name string }{
 	{"→", "rightwards arrow"},
@@ -126,6 +139,9 @@ func main() {
 		})
 	})
 
+	// Three pages, each holding one idea. The sections are sized so none of them
+	// straddles a break: a table cut in half by a page boundary paginates correctly and
+	// still reads as a mistake.
 	doc.Page(func(p *sanur.Page) {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(14)
@@ -138,8 +154,15 @@ func main() {
 	doc.Page(func(p *sanur.Page) {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(14)
-			comparison(c)
+			rtlTable(c)
 			limitations(c)
+		})
+	})
+
+	doc.Page(func(p *sanur.Page) {
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(14)
+			comparison(c)
 		})
 	})
 
@@ -199,6 +222,51 @@ func sampleTable(c *sanur.ColumnBuilder) {
 					StyledText(s.needs, style(7.5).Color(muted))
 			})
 		}
+	})
+}
+
+func rtlTable(c *sanur.ColumnBuilder) {
+	c.Item().Column(func(col *sanur.ColumnBuilder) {
+		col.Spacing(8)
+		col.Item().StyledText("Right to left", style(13).Bold().Color(ink))
+		col.Item().StyledText(
+			"These need two things a wider encoding does not give: the characters are "+
+				"reordered for display, and Arabic letters take one of four shapes "+
+				"according to what sits either side of them. The text column below is "+
+				"right-aligned, which is what a right-to-left paragraph wants.",
+			style(8.5).Color(muted).LineHeight(1.4))
+
+		col.Item().PaddingTop(2).Table(func(t *sanur.TableBuilder) {
+			t.ColumnConstant(58)
+			t.ColumnRelative(1)
+			t.ColumnConstant(196)
+
+			t.HeaderRow(func(r *sanur.TableRowBuilder) {
+				for _, heading := range []string{"Language", "Text", "What it needs"} {
+					r.Cell().Background(accent).PaddingXY(8, 5).
+						StyledText(heading, style(7.5).Bold().Color(sanur.White))
+				}
+			})
+
+			for i, s := range rightToLeft {
+				background := sanur.White
+				if i%2 == 1 {
+					background = panel
+				}
+
+				t.Row(func(r *sanur.TableRowBuilder) {
+					r.Cell().Background(background).PaddingXY(8, 6).AlignMiddle().
+						StyledText(s.language, style(8.5).Bold().Color(ink))
+					// Right-aligned: the reordering makes the text read correctly at
+					// either margin, but flush left is not where a right-to-left
+					// paragraph belongs.
+					r.Cell().Background(background).PaddingXY(8, 6).AlignMiddle().
+						AlignRight().StyledText(s.text, style(11).Color(ink))
+					r.Cell().Background(background).PaddingXY(8, 6).AlignMiddle().
+						StyledText(s.needs, style(7.5).Color(muted))
+				})
+			}
+		})
 	})
 }
 
@@ -298,10 +366,12 @@ func limitations(c *sanur.ColumnBuilder) {
 		col.Item().StyledText("What this does not do", style(11).Bold().Color(ink))
 
 		for _, note := range []string{
-			"No bidirectional reordering: Hebrew and Arabic draw in the order the runes " +
-				"appear, so the glyphs are right and their order is not.",
-			"No shaping: Arabic letters will not join, and Indic scripts will not " +
-				"reorder or form conjuncts. Each rune maps to exactly one glyph.",
+			"Indic scripts are not shaped: Devanagari and its relatives need glyph " +
+				"reordering and conjunct formation, which no codepoint substitution can " +
+				"express.",
+			"Arabic vowel marks sit at the font's default offset rather than centred " +
+				"over the letter they belong to, which needs the font's positioning " +
+				"table.",
 			"No ligatures, small capitals, alternates or kerning pairs. Advance widths " +
 				"come from the font; its layout tables are ignored.",
 			"A character the font lacks becomes a question mark — visible on purpose, " +

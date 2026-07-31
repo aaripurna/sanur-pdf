@@ -50,7 +50,7 @@ var examples = []struct {
 	{name: "print", pkg: "./examples/print", minPages: 1, maxPages: 1},
 	{
 		name: "scripts", pkg: "./examples/scripts",
-		minPages: 2, maxPages: 2,
+		minPages: 3, maxPages: 3,
 		drawsSubstitutes: true,
 		needsFont:        true,
 	},

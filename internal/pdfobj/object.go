@@ -249,16 +249,19 @@ func HexString(data []byte) string {
 	return string(append(out, '>'))
 }
 
-// UTF16BEHex formats a rune as the hex string a CMap uses to name a character,
+// UTF16BEHex formats runes as the hex string a CMap uses to name a character,
 // including the angle brackets.
 //
-// The encoding is UTF-16BE, so anything outside the basic multilingual plane
-// occupies two units as a surrogate pair — an emoji or a rarer CJK ideograph is
-// four bytes here, not two.
-func UTF16BEHex(r rune) string {
+// The encoding is UTF-16BE, so anything outside the basic multilingual plane occupies
+// two units as a surrogate pair — an emoji or a rarer CJK ideograph is four bytes here,
+// not two.
+//
+// Several runes are allowed because one glyph can stand for more than one character: an
+// Arabic lam-alef ligature is a single mark on the page and two letters in the text.
+func UTF16BEHex(runes ...rune) string {
 	var b strings.Builder
 	b.WriteByte('<')
-	for _, unit := range utf16.Encode([]rune{r}) {
+	for _, unit := range utf16.Encode(runes) {
 		fmt.Fprintf(&b, "%04X", unit)
 	}
 	b.WriteByte('>')

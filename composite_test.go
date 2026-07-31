@@ -2,6 +2,7 @@ package sanur_test
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -584,4 +585,250 @@ func TestCFFFontTextIsExtractable(t *testing.T) {
 	if !bytes.Contains(out, []byte(greek)) {
 		t.Errorf("Greek text from a CFF font did not survive extraction; got:\n%s", out)
 	}
+}
+
+// --- right-to-left scripts --------------------------------------------------
+
+// rtlScripts are the languages that need reordering, and Arabic additionally needs
+// contextual letter forms. Every one of these used to render as a row of question
+// marks; before reordering they rendered as correct letters in the wrong order, which
+// is worse, because it looks like text.
+var rtlScripts = []struct{ name, text string }{
+	{"hebrew", "דג סקרן שט בים"},
+	{"hebrew with a number", "עמוד 12 מתוך 34"},
+	{"arabic", "السلام عليكم ورحمة الله"},
+	{"arabic with a number", "الصفحة 12 من 34"},
+	{"arabic with latin", "مرحبا Go بالعالم"},
+	{"arabic ligature", "لا إله إلا الله"},
+	{"persian", "سلام دنیا"},
+}
+
+// rtlDocument renders the given lines with an embedded font.
+func rtlDocument(t *testing.T, name string, lines ...string) []byte {
+	return rtlDocumentWith(t, name, true, lines...)
+}
+
+// rtlDocumentWith is rtlDocument with control over compression, so a test that needs to
+// read the ToUnicode stream back can have it in plain text.
+func rtlDocumentWith(t *testing.T, name string, compress bool, lines ...string) []byte {
+	t.Helper()
+
+	face := embeddedFont(t, name)
+	if face.AdvanceOf('م', 12) <= 0 || face.AdvanceOf('ﻣ', 12) <= 0 {
+		t.Skip("the test font has no Arabic presentation forms")
+	}
+
+	doc := sanur.New().Title("Right to left")
+	if !compress {
+		doc = doc.Uncompressed()
+	}
+	doc.Page(func(p *sanur.Page) {
+		p.Size(sanur.A4).Margin(45)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(14))
+		p.Content().Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(12)
+			for _, line := range lines {
+				c.Item().Text(line)
+			}
+		})
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatalf("generating document: %v", err)
+	}
+	return data
+}
+
+// allRTLText is every line above, for the checks that do not care which document a
+// line came from.
+func allRTLText() []string {
+	lines := make([]string, 0, len(rtlScripts))
+	for _, script := range rtlScripts {
+		lines = append(lines, script.text)
+	}
+	return lines
+}
+
+func TestRightToLeftTextIsExtractableAsWritten(t *testing.T) {
+	// This is the check that proves the whole chain. Extraction fails if the text was
+	// not reordered, if it was reordered twice, if the Arabic was left unshaped, or — the
+	// subtle one — if the shaped presentation forms were reported as the document's text
+	// instead of the letters they stand for, which would leave it unsearchable.
+	pdftotext, err := exec.LookPath("pdftotext")
+	if err != nil {
+		t.Skip("pdftotext not installed")
+	}
+
+	dir := t.TempDir()
+
+	// One document per script, which is both realistic and necessary. Arabic yeh and
+	// Farsi yeh are drawn with the same glyph in medial position, and Identity-H
+	// addresses glyphs, so a document containing both can only declare one of them —
+	// see TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning.
+	for i, script := range rtlScripts {
+		path := filepath.Join(dir, fmt.Sprintf("rtl-%d.pdf", i))
+
+		data := rtlDocument(t, fmt.Sprintf("RTLExtract%d", i), script.text)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := exec.Command(pdftotext, path, "-").Output()
+		if err != nil {
+			t.Fatalf("pdftotext failed: %v", err)
+		}
+
+		// Extraction tools wrap each run in bidirectional control characters, and
+		// reconstruct spaces from glyph positions rather than from the space glyph, so
+		// neither survives a literal comparison. The characters do.
+		extracted := withoutSpaces(stripBidiControls(string(out)))
+
+		if !strings.Contains(extracted, withoutSpaces(script.text)) {
+			t.Errorf("%s did not survive extraction as written; got:\n%s", script.name, out)
+		}
+	}
+}
+
+func TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning(t *testing.T) {
+	// Arabic yeh and Farsi yeh are different characters that most fonts draw with one
+	// glyph in medial position, because there they look the same. Identity-H addresses
+	// glyphs, so the two characters share a code and only one can be named in
+	// ToUnicode. That is a limit of the encoding, not something to fix — what can be
+	// fixed is the answer depending on which page was drawn last.
+	face := embeddedFont(t, "RTLSharedGlyph")
+
+	source, ok := fonts.GlyphSourceOf(face)
+	if !ok {
+		t.Fatal("an embedded font must expose its glyphs")
+	}
+
+	arabic, hasArabic := source.GlyphID('\ufef4') // yeh medial
+	farsi, hasFarsi := source.GlyphID('\ufbff')   // Farsi yeh medial
+	if !hasArabic || !hasFarsi || arabic != farsi {
+		t.Skip("the test font draws the two yehs with different glyphs")
+	}
+
+	// Both orders must name the character from the line drawn first.
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"arabic first", []string{"عليكم", "دنیا"}, "<064A>"},
+		{"farsi first", []string{"دنیا", "عليكم"}, "<06CC>"},
+	} {
+		data := rtlDocumentWith(t, "RTLShared"+tc.name, false, tc.lines...)
+
+		entry := regexp.MustCompile(`<` + hex4(arabic) + `> (<[0-9A-F]+>)`).FindSubmatch(data)
+		if entry == nil {
+			t.Errorf("%s: glyph %d has no ToUnicode entry", tc.name, arabic)
+			continue
+		}
+		if got := string(entry[1]); got != tc.want {
+			t.Errorf("%s: glyph %d maps to %s, want %s", tc.name, arabic, got, tc.want)
+		}
+	}
+}
+
+// stripBidiControls removes the directional formatting characters an extraction tool
+// inserts to record which runs were right-to-left.
+func stripBidiControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 0x2000 && r <= 0x206F {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func TestArabicIsDrawnWithContextualForms(t *testing.T) {
+	// Arabic set without its contextual forms reads as a row of disconnected letters:
+	// legible to nobody, and correct according to every check that only looks at
+	// characters. The forms have their own codepoints, so the drawn glyphs can be
+	// compared against the ones the letters should have taken.
+	face := embeddedFont(t, "RTLShaping")
+
+	source, ok := fonts.GlyphSourceOf(face)
+	if !ok {
+		t.Fatal("an embedded font must expose its glyphs")
+	}
+	if _, has := source.GlyphID('ﻣ'); !has {
+		t.Skip("the test font has no Arabic presentation forms")
+	}
+
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(14))
+		// Meem-reh-hah-beh-alef. Meem opens a cluster, reh closes it because nothing
+		// joins forward out of a reh, then hah opens the next one.
+		p.Content().Text("مرحبا")
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operand := regexp.MustCompile(`<([0-9A-F]+)> Tj`).FindSubmatch(data)
+	if operand == nil {
+		t.Fatalf("no text operand found:\n%s", data)
+	}
+
+	// Reordered for display, so the last letter is drawn first.
+	var want string
+	for _, r := range []rune{'ﺎ', 'ﺒ', 'ﺣ', 'ﺮ', 'ﻣ'} {
+		gid, ok := source.GlyphID(r)
+		if !ok {
+			t.Skipf("the test font has no glyph for %q", r)
+		}
+		want += hex4(gid)
+	}
+
+	if got := string(operand[1]); got != want {
+		t.Errorf("drawn glyphs = %s, want %s (the shaped forms in visual order)", got, want)
+	}
+}
+
+func TestHebrewIsDrawnInVisualOrder(t *testing.T) {
+	// Hebrew needs no shaping at all — its letters do not join — so reordering is the
+	// whole of what makes it correct, and the glyphs are the letters themselves.
+	face := embeddedFont(t, "RTLHebrew")
+
+	source, _ := fonts.GlyphSourceOf(face)
+
+	doc := sanur.New().Uncompressed()
+	doc.Page(func(p *sanur.Page) {
+		p.Margin(40)
+		p.DefaultTextStyle(sanur.TextStyle().Font(face).Size(14))
+		p.Content().Text("שלום")
+	})
+
+	data, err := doc.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operand := regexp.MustCompile(`<([0-9A-F]+)> Tj`).FindSubmatch(data)
+	if operand == nil {
+		t.Fatalf("no text operand found:\n%s", data)
+	}
+
+	var want string
+	for _, r := range []rune{'ם', 'ו', 'ל', 'ש'} {
+		gid, ok := source.GlyphID(r)
+		if !ok {
+			t.Skip("the test font has no Hebrew")
+		}
+		want += hex4(gid)
+	}
+
+	if got := string(operand[1]); got != want {
+		t.Errorf("drawn glyphs = %s, want %s (the letters reversed)", got, want)
+	}
+}
+
+func TestRightToLeftDocumentPassesGhostscript(t *testing.T) {
+	checkWithGhostscript(t, rtlDocument(t, "RTLGhostscript", allRTLText()...))
 }

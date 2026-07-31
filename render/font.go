@@ -7,6 +7,7 @@ import (
 	"github.com/aaripurna/sanur-pdf/core"
 	"github.com/aaripurna/sanur-pdf/fonts"
 	"github.com/aaripurna/sanur-pdf/internal/pdfobj"
+	sanurtext "github.com/aaripurna/sanur-pdf/text"
 )
 
 // fontUsage is one font as this document uses it.
@@ -21,9 +22,9 @@ type fontUsage struct {
 	program fonts.FontProgram
 	source  fonts.GlyphSource
 
-	name string          // resource name, e.g. "F0"
-	ref  pdfobj.Ref      // reserved on first use, filled in at the end
-	used map[uint16]rune // glyph -> a rune it represents, for text extraction
+	name string            // resource name, e.g. "F0"
+	ref  pdfobj.Ref        // reserved on first use, filled in at the end
+	used map[uint16][]rune // glyph -> the characters it stands for, for extraction
 }
 
 // fontResource registers a font and returns its resource name, e.g. "F0".
@@ -49,7 +50,7 @@ func (b *Builder) fontResource(f core.Font) (*fontUsage, error) {
 		program: program,
 		name:    fmt.Sprintf("F%d", len(b.fontOrder)),
 		ref:     b.writer.Reserve(),
-		used:    map[uint16]rune{},
+		used:    map[uint16][]rune{},
 	}
 
 	if program.Composite {
@@ -82,16 +83,32 @@ func (b *Builder) encodeText(usage *fontUsage, text string) string {
 
 	for _, r := range text {
 		gid, ok := usage.source.GlyphID(r)
+
+		meaning := sanurtext.BaseRunes(r)
 		if !ok {
 			// The substitute stands in, and is recorded as a question mark rather
 			// than as the rune it replaced. Mapping it back to the original would
 			// make a copy-paste disagree with what is on the page, and would be
 			// arbitrary anyway once two different missing runes share it.
 			gid = usage.source.SubstituteGlyph()
-			r = '?'
+			meaning = []rune{'?'}
 		}
 
-		usage.used[gid] = r
+		// What is recorded is what the glyph means, not the codepoint that produced
+		// it. A shaped Arabic letter is drawn from a presentation form, and a document
+		// reporting those as its text can be neither searched for the word as anyone
+		// would type it nor usefully copied out of.
+		//
+		// The first meaning wins where a glyph has more than one. That happens for real:
+		// Arabic yeh and Farsi yeh are different characters that most fonts draw with
+		// the same glyph in medial position, because in that position they look the
+		// same. Identity-H addresses glyphs, so the two characters share one code and
+		// only one of them can be named — a limit of the encoding rather than of this
+		// code. Keeping the first keeps the answer stable instead of depending on which
+		// page happened to be drawn last.
+		if _, seen := usage.used[gid]; !seen {
+			usage.used[gid] = meaning
+		}
 		codes = append(codes, byte(gid>>8), byte(gid))
 	}
 
@@ -305,7 +322,7 @@ endcodespacerange
 
 		fmt.Fprintf(&b, "%d beginbfchar\n", end-start)
 		for _, gid := range gids[start:end] {
-			fmt.Fprintf(&b, "<%04X> %s\n", gid, pdfobj.UTF16BEHex(usage.used[gid]))
+			fmt.Fprintf(&b, "<%04X> %s\n", gid, pdfobj.UTF16BEHex(usage.used[gid]...))
 		}
 		b.WriteString("endbfchar\n")
 	}
@@ -324,7 +341,7 @@ end
 // Map iteration is randomised, and everything downstream — the width runs, the
 // ToUnicode blocks, the subset tag — depends on the order. Sorting here is what
 // keeps two runs of the same document byte-identical.
-func sortedUsedGIDs(used map[uint16]rune) []uint16 {
+func sortedUsedGIDs(used map[uint16][]rune) []uint16 {
 	set := make(map[uint16]bool, len(used))
 	for gid := range used {
 		set[gid] = true

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/aaripurna/sanur-pdf/core"
+	"github.com/aaripurna/sanur-pdf/text"
 )
 
 // Span is a run of text sharing one style. A Text element holds several so that
@@ -24,6 +25,16 @@ type Span struct {
 type Text struct {
 	Spans []Span
 	Align core.HorizontalAlign
+
+	// Direction is the reading direction of the paragraph. The zero value takes it
+	// from the content, following Unicode's rule that the first strong directional
+	// character decides.
+	//
+	// It is worth setting explicitly when a paragraph begins with something neutral.
+	// An Arabic sentence opening with a figure or a Latin product name would be read
+	// as left-to-right and laid out accordingly, which puts the clauses in the wrong
+	// order even though every word is right.
+	Direction text.Direction
 
 	// lines is the cached result of breaking the spans, valid only for
 	// layoutWidth. Re-breaking on every Measure would be wasteful given the
@@ -102,8 +113,14 @@ func (t *Text) tokenize() []atom {
 		}
 
 		// Normalise line endings so a break is always a single \n atom.
-		text := strings.ReplaceAll(span.Text, "\r\n", "\n")
-		text = strings.ReplaceAll(text, "\r", "\n")
+		content := strings.ReplaceAll(span.Text, "\r\n", "\n")
+		content = strings.ReplaceAll(content, "\r", "\n")
+
+		// Shaping happens here rather than at draw time because it substitutes one
+		// glyph for another, and the substitutes have their own widths: an Arabic
+		// letter in its initial form is not as wide as the same letter standing alone.
+		// Shaping after measurement would break every line in the wrong place.
+		content = text.Shape(content, glyphChecker(span.Style.Font))
 
 		var current strings.Builder
 		flush := func(kind atomKind) {
@@ -120,7 +137,7 @@ func (t *Text) tokenize() []atom {
 			current.Reset()
 		}
 
-		for _, r := range text {
+		for _, r := range content {
 			switch {
 			case r == '\n':
 				flush(atomWord)
@@ -385,7 +402,9 @@ func (t *Text) Draw(canvas core.Canvas, available core.Size) {
 			x = 0
 		}
 
-		for _, seg := range line.segments {
+		// Reordering is the last thing that happens, and it has to be: bidirectional
+		// order is defined per line, so it cannot be settled until the line is known.
+		for _, seg := range t.reorder(line.segments) {
 			style := seg.style
 			style.WordSpacing += justify
 
@@ -397,6 +416,127 @@ func (t *Text) Draw(canvas core.Canvas, available core.Size) {
 	}
 
 	t.rendered = last
+}
+
+// direction resolves the paragraph direction, from the field when it is set and from
+// the content otherwise.
+//
+// The whole paragraph decides, not the line: a wrapped line beginning with a Latin
+// word inside an Arabic paragraph is still part of a right-to-left paragraph, and
+// reordering it on its own evidence would put its clauses the wrong way round.
+func (t *Text) direction() text.Direction {
+	if t.Direction != text.DirectionNeutral {
+		return t.Direction
+	}
+
+	var joined strings.Builder
+	for _, span := range t.Spans {
+		joined.WriteString(span.Text)
+	}
+	return text.DirectionOf(joined.String())
+}
+
+// reorder puts a line's segments into the order they are drawn.
+//
+// The work is at the level of the line rather than the segment because a styled run
+// is not a directional run: a bold word inside an Arabic sentence is one segment among
+// several, and reordering each in isolation would leave the segments themselves in
+// logical order — every word correct and the sentence backwards. So the line's text is
+// reassembled, reordered as a whole, and then cut back into segments along the
+// boundaries the permutation produced.
+func (t *Text) reorder(segments []textSegment) []textSegment {
+	if len(segments) == 0 {
+		return segments
+	}
+
+	var (
+		joined strings.Builder
+		owner  []int // rune index -> index of the segment it came from
+	)
+	for i, seg := range segments {
+		joined.WriteString(seg.text)
+		for range []rune(seg.text) {
+			owner = append(owner, i)
+		}
+	}
+
+	line := joined.String()
+	glyphs := text.VisualRunes(line, t.direction())
+
+	// Nothing moved and nothing was mirrored, which is the case for every document in
+	// a left-to-right script. Returning the segments untouched keeps them merged and
+	// avoids rebuilding them.
+	if unchanged(glyphs, []rune(line)) {
+		return segments
+	}
+
+	var (
+		out     []textSegment
+		current []rune
+		from    = -1
+	)
+	flush := func() {
+		if from < 0 || len(current) == 0 {
+			return
+		}
+		style := segments[from].style
+		content := string(current)
+		out = append(out, textSegment{
+			text:  content,
+			style: style,
+			width: style.MeasureText(content),
+		})
+		current = nil
+	}
+
+	for _, glyph := range glyphs {
+		if owner[glyph.From] != from {
+			flush()
+			from = owner[glyph.From]
+		}
+		current = append(current, glyph.Rune)
+	}
+	flush()
+
+	return out
+}
+
+// unchanged reports whether reordering left the line exactly as it was.
+//
+// The characters are compared as well as the positions, because a bracket can be
+// mirrored without moving: a lone parenthesis in a right-to-left line is a run of one,
+// so reversing it is a no-op while it still has to be drawn the other way round.
+func unchanged(glyphs []text.Glyph, runes []rune) bool {
+	if len(glyphs) != len(runes) {
+		return false
+	}
+	for i, glyph := range glyphs {
+		if glyph.From != i || glyph.Rune != runes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// glyphChecker reports which runes a font can actually draw, so shaping can fall back
+// to a base letter rather than asking for a presentation form the font has not got.
+//
+// The capability is asserted rather than imported: fonts.GlyphSource is the interface
+// an embedded font satisfies, and naming it here would make the layout package depend
+// on the font package to ask one question. A built-in font answers no to everything,
+// which is correct — the standard-14 faces have no Arabic at all.
+func glyphChecker(font core.Font) func(rune) bool {
+	source, ok := font.(interface {
+		GlyphID(rune) (uint16, bool)
+	})
+	if !ok {
+		return func(rune) bool { return false }
+	}
+
+	return func(r rune) bool {
+		_, has := source.GlyphID(r)
+		return has
+	}
 }
 
 func (t *Text) ResetState(hard bool) {
