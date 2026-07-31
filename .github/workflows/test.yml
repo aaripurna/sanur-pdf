@@ -47,7 +47,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ghostscript \
             poppler-utils \
-            fribidi \
+            libfribidi-bin \
+            libfribidi-dev \
             fonts-dejavu \
             fonts-stix
 
