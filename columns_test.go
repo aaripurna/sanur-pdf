@@ -493,9 +493,9 @@ func TestLinkInASecondColumnLandsInIt(t *testing.T) {
 }
 
 func TestTaggedColumnsKeepReadingOrder(t *testing.T) {
-	// Marked content is numbered in the order it is drawn and the structure tree is
-	// built in the same pass, so a reader follows the tree rather than the geometry.
-	// Both have to agree, and a column boundary is where they would come apart.
+	// Marked content is numbered in the order it is drawn and the structure tree is built
+	// in the same pass, so a reader follows the tree rather than the geometry. Both have
+	// to agree, and a column boundary is where they would come apart.
 	face := embeddedFont(t, "ColumnFace")
 
 	doc := sanur.New().Title("Columns").Tagged("en-GB").Uncompressed()
@@ -515,14 +515,17 @@ func TestTaggedColumnsKeepReadingOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pages := countPages(data); pages != 1 {
-		t.Fatalf("expected one sheet of two columns, got %d", pages)
+
+	// How many sheets this takes depends on the metrics of whatever font the machine
+	// had, so it is not asserted. What has to be true is that a second column was used
+	// somewhere, or the test says nothing about columns: the offset is geometry, and
+	// A4 less 40 of margin puts it at 306.64 whatever the font.
+	if !strings.Contains(string(data), "1 0 0 1 306.64 40 cm") {
+		t.Fatal("no second column was drawn; the body did not fill the first")
 	}
 
 	_, root := structureOf(t, data)
 
-	// Walking the tree in order must give sequence numbers that only ever go up: the
-	// structure's order is the reading order, and the numbers are the drawing order.
 	var mcids []int
 	var walk func(*node)
 	walk = func(n *node) {
@@ -536,11 +539,29 @@ func TestTaggedColumnsKeepReadingOrder(t *testing.T) {
 	if len(mcids) < 60 {
 		t.Fatalf("only %d marked sequences in the tree", len(mcids))
 	}
+
+	// Walking the tree gives the reading order; the numbers are the drawing order. Within
+	// a sheet they only ever go up, and they restart at zero on the next one — sequences
+	// are numbered per page, not per document. So the sequence read off the tree is a run
+	// of increasing numbers per sheet, and nothing else.
+	sheets := 1
 	for i := 1; i < len(mcids); i++ {
-		if mcids[i] <= mcids[i-1] {
-			t.Fatalf("sequence %d follows %d in the tree: reading order does not "+
-				"match the order the columns were drawn", mcids[i], mcids[i-1])
+		switch {
+		case mcids[i] > mcids[i-1]:
+			// Still on the same sheet, and in order.
+		case mcids[i] == 0:
+			// The next sheet, numbering from zero again.
+			sheets++
+		default:
+			t.Fatalf("sequence %d follows %d in the tree: reading order does not match "+
+				"the order the columns were drawn", mcids[i], mcids[i-1])
 		}
+	}
+
+	// Every sheet contributes to the tree, so the resets account for all of them. A sheet
+	// whose content never reached the structure would leave one unaccounted for.
+	if pages := countPages(data); sheets != pages {
+		t.Errorf("the tree restarts its numbering %d times over %d sheets", sheets, pages)
 	}
 }
 

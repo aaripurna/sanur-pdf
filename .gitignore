@@ -8,3 +8,8 @@
 # Coverage output
 coverage.out
 coverage.html
+
+# Written by the Linux container runner (see debian.Dockerfile)
+test.log
+skipped.txt
+coverage.txt

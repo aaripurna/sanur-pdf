@@ -41,8 +41,17 @@ vet:
 # cover measures every package against every test, not just each package's own
 # tests. Without -coverpkg, code in render exercised by the root package's
 # end-to-end tests would be reported as untested.
+# An empty LIBPKGS means `go list` failed — most likely git could not read the tree, which
+# is what happens to a repository bind-mounted into a container. Coverage would then be
+# measured over nothing and reported as a percentage that looks entirely reasonable, which
+# is worse than no figure at all.
 .PHONY: cover
 cover:
+	@test -n "$(strip $(LIBPKGS))" || { \
+		echo "go list returned no packages, so there is nothing to measure."; \
+		echo "Run 'go list ./...' to see why."; \
+		exit 1; \
+	}
 	@go test -count=1 -covermode=atomic -coverpkg=$(COVERPKG) \
 		-coverprofile=coverage.out $(LIBPKGS) \
 		| sed -e 's/ in github.com.*$$//' -e 's|github.com/aaripurna/||'
@@ -107,6 +116,27 @@ accessible:
 .PHONY: newsletter
 newsletter:
 	go run ./examples/newsletter newsletter.pdf
+
+# Runs the whole suite in a Linux container, which is the only way to see what CI sees
+# from a Mac: the system font the tests pick up is Arial here and DejaVu there, and they
+# are not the same width.
+#
+# The image holds no source — the working tree is mounted — so it is built once and stays
+# built. The two volumes keep the Go caches off that mount, where they would be slow.
+# Whichever is installed. Podman needs no daemon and maps container root to the invoking
+# user, so files the run leaves behind belong to you rather than to root.
+CONTAINER ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
+IMAGE ?= sanur-debian
+
+.PHONY: debian debian-image
+debian: debian-image
+	$(CONTAINER) run --rm -v "$(PWD)":/app -w /app \
+		-v sanur-gomod:/go/pkg/mod \
+		-v sanur-gobuild:/root/.cache/go-build \
+		$(IMAGE)
+
+debian-image:
+	$(CONTAINER) build -f debian.Dockerfile -t $(IMAGE) .
 
 .PHONY: clean
 clean:

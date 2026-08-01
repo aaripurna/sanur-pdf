@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Pinned so both platforms validate against the same rules: this is the version Homebrew
+  # installs on macOS. Bumping it changes the Linux cache key, so the next run fetches the
+  # new installer instead of reusing the old one.
+  VERAPDF_VERSION: 1.30.2
+
 jobs:
   test:
     name: ${{ matrix.os }}
@@ -40,7 +46,7 @@ jobs:
       #                  font is embedded, subsetted and mapped back to Unicode
       #   fribidi        the reference implementation the bidirectional algorithm is
       #                  compared against, character for character
-      #   verapdf        the PDF/UA validator, on macOS only — see below
+      #   verapdf        the PDF/UA reference validator
       #
       # Two font packages carry PostScript outlines because the CFF checks search for a
       # font rather than naming one, and neither package is guaranteed to exist: the first
@@ -57,21 +63,67 @@ jobs:
             libfribidi-dev \
             fonts-dejavu \
             fonts-stix \
-            fonts-texgyre
+            fonts-texgyre \
+            default-jre-headless \
+            unzip
 
-      # veraPDF validates the tagged output against PDF/UA-1, and it found six real defects
-      # the hand-written structural tests passed straight over — including one that made
-      # every tagged sequence in a document read as untagged.
-      #
-      # It runs on macOS only. Debian does not package it, and its own installer takes an
-      # IzPack answer file naming the installer's internal panel identifiers, which change
-      # between versions: a dependency that breaks on upgrade for reasons unrelated to this
-      # project. The conformance test skips cleanly without it and the skip is reported in
-      # the run summary, so the gap is visible rather than silent. If Linux coverage is ever
-      # wanted, the maintained route is the verapdf Docker image behind a wrapper on PATH.
       - name: install verification tools
         if: runner.os == 'macOS'
         run: brew install ghostscript poppler fribidi verapdf
+
+      # veraPDF validates the tagged output against PDF/UA-1, and it found six real defects
+      # the hand-written structural tests passed straight over — including one that made
+      # every tagged sequence in a document read as untagged. Homebrew has it; Debian and
+      # Ubuntu do not package it, so on Linux it is installed from the project's own
+      # installer.
+      #
+      # That installer is a 33 MB download from a server that serves it at roughly 50 KB/s,
+      # which is far too slow to repeat on every push — hence the cache. The key is the
+      # version alone: the artefact is immutable, so a hit is always the right file, and a
+      # version bump misses and fetches the new one.
+      - name: cache the veraPDF installer
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/verapdf
+          key: verapdf-${{ runner.os }}-${{ env.VERAPDF_VERSION }}
+
+      # The installer is IzPack, and its console mode is driven directly here rather than
+      # through an auto-install XML file. That is deliberate: the XML names the installer's
+      # own panel identifiers, which move between releases, and an earlier attempt at this
+      # broke on exactly that. The prompts are stable for a pinned version.
+      #
+      # Installed under HOME so none of this needs sudo.
+      - name: install veraPDF
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+
+          zip="$HOME/.cache/verapdf/verapdf-$VERAPDF_VERSION.zip"
+          mkdir -p "$(dirname "$zip")"
+
+          if [ -s "$zip" ]; then
+            echo "Using the cached installer."
+          else
+            echo "Cache miss, downloading."
+            curl -sSL --retry 3 --retry-delay 5 -o "$zip" \
+              "https://software.verapdf.org/releases/${VERAPDF_VERSION%.*}/verapdf-greenfield-$VERAPDF_VERSION-installer.zip"
+          fi
+
+          unzip -q "$zip" -d /tmp/verapdf
+          cd "/tmp/verapdf/verapdf-greenfield-$VERAPDF_VERSION"
+
+          # In order: dismiss the welcome, set the install path, confirm creating it,
+          # continue, then one answer per optional pack — GUI no, CLI yes, documentation
+          # no, sample plugins no — continue, decline the offer to write an install
+          # script, and finish.
+          printf '1\n%s\nO\n1\nN\nY\nN\nN\n1\nN\n1\n' "$HOME/verapdf" \
+            | java -jar "verapdf-izpack-installer-$VERAPDF_VERSION.jar" -console
+
+          echo "$HOME/verapdf" >> "$GITHUB_PATH"
+
+          # A silent failure here would look exactly like the skip it is meant to remove.
+          "$HOME/verapdf/verapdf" --version
 
       # gofmt and go vet. The target fails on unformatted files rather than listing them.
       - name: vet

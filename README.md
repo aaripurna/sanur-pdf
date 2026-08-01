@@ -1028,7 +1028,19 @@ make skipped      # list the checks that did not run, and why
 make cover        # per-package statement coverage
 make cover-html   # write coverage.html
 make examples     # generate every example
+make debian       # run the whole suite in a Linux container
 ```
+
+`make debian` exists because the two platforms are not interchangeable, and the difference
+is invisible until CI says so: the system font the suite picks up is Arial on macOS and
+DejaVu on Linux, and they are not the same width. A test whose expectation depends on that
+passes locally and fails on push. The image holds the environment rather than the project
+— the working tree is mounted — so it is built once and each run tests what is on disk,
+uncommitted changes included. It uses podman if that is installed and docker otherwise.
+
+It installs veraPDF the same way the Linux CI job does and at the same pinned version, so
+the PDF/UA checks run there too. The installer is kept in a build cache rather than a
+layer, so its slow download happens once on a machine rather than once per rebuild.
 
 Every push and pull request runs all of it on Linux and macOS. Both are in the matrix
 because they are not interchangeable: which fonts a runner has decides which checks can
@@ -1120,10 +1132,10 @@ What the suite checks, and why in that particular way:
   structure is *also* read back out of the object graph. Both are needed and neither
   suffices: the hand-written tests passed while the document failed six conformance rules,
   and they are what pin the behaviour a validator does not describe — that reversing the
-  parent-tree array, or sharing the sequence counter across pages, is a failure. CI runs
-  veraPDF on macOS only, since Debian does not package it and its installer is coupled to
-  identifiers that change between versions; the Linux job skips that one check and says so
-  in the run summary.
+  parent-tree array, or sharing the sequence counter across pages, is a failure. It runs on
+  both platforms and at the same pinned version: from Homebrew on macOS, and on Linux from
+  the project's own installer, whose 33 MB download is cached between runs because the
+  server serves it at about 50 KB/s.
 - **Determinism** is asserted by generating the same document twice and diffing
   the bytes.
 - **The concurrency promise is tested rather than asserted.** Sixteen documents are
@@ -1136,8 +1148,8 @@ Tests that need a system font or an external tool skip cleanly when it is
 missing, so the suite passes on a bare machine — and `make skipped` says which ones did,
 with the reason each gave, because a suite that quietly checks half of what it claims is
 the failure this project keeps having to guard against. CI installs Ghostscript, poppler,
-fribidi and the DejaVu and STIX fonts so that as little as possible skips, and prints
-whatever still does.
+fribidi, veraPDF and the DejaVu and STIX fonts so that as little as possible skips, and
+prints whatever still does.
 
 ## Not yet implemented
 
