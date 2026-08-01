@@ -148,7 +148,34 @@ type Mark struct {
 	// It is required on a header cell — a reader that knows a cell is a heading but not
 	// what it heads has gained very little — and defaults to the column.
 	Scope Scope
+
+	// Numbering is how a list labels its items, recorded on the list itself.
+	//
+	// It matters because the labels are drawn as ordinary text, so nothing in the file
+	// otherwise says whether "1." is a list marker or part of the sentence. A reader uses
+	// this to announce "list of five items, item one" instead of reading the digits.
+	Numbering Numbering
 }
+
+// Numbering is the scheme a list uses to label its items.
+type Numbering string
+
+const (
+	// NumberingNone is a list whose items carry no label at all.
+	NumberingNone Numbering = "None"
+
+	// The unordered markers, which differ only in the shape drawn.
+	NumberingDisc   Numbering = "Disc"
+	NumberingCircle Numbering = "Circle"
+	NumberingSquare Numbering = "Square"
+
+	// The ordered schemes.
+	NumberingDecimal    Numbering = "Decimal"
+	NumberingLowerAlpha Numbering = "LowerAlpha"
+	NumberingUpperAlpha Numbering = "UpperAlpha"
+	NumberingLowerRoman Numbering = "LowerRoman"
+	NumberingUpperRoman Numbering = "UpperRoman"
+)
 
 // Scope is the direction a table header cell applies in.
 type Scope string

@@ -190,6 +190,9 @@ func taggedDocument(t *testing.T) []byte {
 				tb.HeaderRow(func(r *sanur.TableRowBuilder) { r.Cells("Item", "Amount") })
 				tb.Row(func(r *sanur.TableRowBuilder) { r.Cells("Design", "250.00") })
 			})
+			c.Item().List(func(l *sanur.ListBuilder) {
+				l.Numbered().Items("A numbered item.", "Another one.")
+			})
 		})
 	})
 
@@ -305,6 +308,15 @@ Document
         P
       TD
         P
+  L
+    LI
+      Lbl
+      LBody
+        P
+    LI
+      Lbl
+      LBody
+        P
 `)
 
 	if got := strings.TrimSpace(root.outline()); got != want {
@@ -404,11 +416,17 @@ func TestFurnitureAndRulesAreArtifacts(t *testing.T) {
 	}
 	collect(root)
 
-	// Five paragraphs of real content: the body paragraph, the link's text and the four
-	// table cells. The header and the page number would make it more.
-	if got := strings.Count(strings.Join(roles, " "), "P"); got != 6 {
-		t.Errorf("found %d paragraph-ish roles in %v; the furniture may have leaked in",
-			got, roles)
+	// Eight paragraphs of real content: the body paragraph, the link's text, the four table
+	// cells and the two list bodies. The header and the page number would make it more.
+	paragraphs := 0
+	for _, role := range roles {
+		if role == "P" {
+			paragraphs++
+		}
+	}
+	if paragraphs != 8 {
+		t.Errorf("found %d paragraphs in %v; the furniture may have leaked in",
+			paragraphs, roles)
 	}
 }
 

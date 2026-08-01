@@ -442,6 +442,39 @@ c.Item().Table(func(t *sanur.TableBuilder) {
 })
 ```
 
+### Lists
+
+A list is a column of items, each a marker in a gutter beside a body. Being a column
+underneath, it paginates for free; the body is a full container, so an item holds anything
+— a paragraph, a table, or another list.
+
+```go
+c.Item().List(func(l *sanur.ListBuilder) {
+	l.Numbered()
+	l.Item().Text("Measure the space available.")
+	l.Item().Text("Draw into whatever the parent allotted.")
+	l.Item().Column(func(col *sanur.ColumnBuilder) {
+		col.Item().Text("A sublist belongs to the item introducing it:")
+		col.Item().List(func(inner *sanur.ListBuilder) {
+			inner.Lettered().Items("nested", "and lettered")
+		})
+	})
+})
+```
+
+`Bulleted` (the default), `Numbered`, `Lettered` and `Unmarked` cover the usual schemes,
+and `Marker` takes a function from an item's index to its label for anything else. Markers
+are set flush right in the gutter, so `9.` and `10.` line up on the full stop rather than
+on their leading digits, and the body hangs clear of the gutter so a wrapped line aligns
+with the first. `Lettered` continues `aa.`, `ab.` past the twenty-sixth item rather than
+`ba.`, which is what a plain base-26 conversion gives.
+
+The reason this exists rather than leaving you to compose a column of rows is the
+structure. In a [tagged document](#accessible-output) a list becomes `L → LI → Lbl +
+LBody`, and the list records which scheme it uses. Markers are drawn as ordinary text, so
+without that nothing in the file says whether `1.` begins an item or a sentence, and a
+reader announces the digits instead of "list of five items, item one".
+
 ### Rich text
 
 Line breaking runs across span boundaries, so styling never affects where lines
@@ -830,7 +863,8 @@ The language is required: a reader that does not know what language a document i
 cannot pronounce it.
 
 **Most of it is inferred.** Text is a paragraph, an image a figure, the content of a link
-a link, a table's header row the headings for its columns. A rule, a background, a running
+a link, a table's header row the headings for its columns, a [list](#lists) a list with its
+items, markers and bodies distinguished. A rule, a background, a running
 header and a page number are decoration, marked so that a reader skips them — which
 matters as much as tagging the content, because a conforming document has no third
 category and `Page 12 of 40` announced between every two paragraphs is worse than
@@ -883,8 +917,6 @@ refused, with a message saying to register a font.
   announces two paragraphs rather than one.
 - **Form fields, notes and highlights are absent**, so a tagged document cannot yet
   contain an accessible form.
-- **Lists are not built for you.** The roles are exported, so a list can be tagged with
-  `Tag`, but there is no list builder that does it automatically.
 
 ## Concurrency
 
@@ -953,20 +985,20 @@ because they are not interchangeable: which fonts a runner has decides which che
 run, and `make skipped` reports what did not into the run summary rather than letting a
 green tick stand for less than it appears to.
 
-640 tests across the nine library packages, at 95.0% statement coverage (the build tooling has its own tests and is measured separately):
+650 tests across the nine library packages, at 95.0% statement coverage (the build tooling has its own tests and is measured separately):
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 288 | 283 | 98.3% |
 | `text` | 359 | 349 | 97.2% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `sanur` (root) | 507 | 485 | 95.7% |
+| `sanur` (root) | 563 | 539 | 95.7% |
 | `elements` | 740 | 706 | 95.4% |
 | `fonts` | 502 | 474 | 94.4% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
-| `render` | 814 | 760 | 93.4% |
-| **Total** | **4054** | **3851** | **95.0%** |
+| `render` | 819 | 764 | 93.3% |
+| **Total** | **4115** | **3909** | **95.0%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's

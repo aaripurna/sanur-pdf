@@ -373,6 +373,20 @@ func (b *Builder) writeStructElem(elem *structElem, pageRefs []pdfobj.Ref, rootR
 			String())
 	}
 
+	// A list says how it labels its items, because the labels themselves are drawn as
+	// ordinary text: nothing else in the file distinguishes "1." as a marker from "1." as
+	// part of a sentence.
+	if elem.mark.Role == core.RoleList {
+		numbering := elem.mark.Numbering
+		if numbering == "" {
+			numbering = core.NumberingNone
+		}
+		dict.Set("A", pdfobj.NewDict().
+			SetName("O", "List").
+			SetName("ListNumbering", string(numbering)).
+			String())
+	}
+
 	if elem.mark.Alt != "" {
 		dict.SetTextString("Alt", elem.mark.Alt)
 	}

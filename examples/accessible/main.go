@@ -52,6 +52,7 @@ var findings = []finding{
 	{"Tables", "Pass", "Header cells are marked as headers"},
 	{"Links", "Pass", "Each link is reachable from the structure"},
 	{"Language", "Pass", "Declared as en-GB"},
+	{"Lists", "Pass", "Markers are labels, not content"},
 	{"Furniture", "Pass", "Running header and footer are artifacts"},
 }
 
@@ -200,6 +201,36 @@ func main() {
 		p.Content().Column(func(c *sanur.ColumnBuilder) {
 			c.Spacing(12)
 
+			c.Item().Tag(sanur.Heading2).StyledText("Lists",
+				sanur.TextStyle().Family(family).Size(13).Bold().Color(ink))
+
+			c.Item().Text("A list's markers are drawn as ordinary text, so nothing in a " +
+				"file otherwise says whether \u201c1.\u201d begins an item or a sentence. " +
+				"Building it as a list records three things a reader needs:")
+
+			c.Item().PaddingLeft(4).List(func(l *sanur.ListBuilder) {
+				l.Numbered().Spacing(6)
+				l.MarkerStyle(sanur.TextStyle().Family(family).Size(9).Bold().Color(accent))
+
+				l.Item().Text("That these items belong to one list, so a reader can say " +
+					"how long it is and offer to skip it.")
+				l.Item().Text("That each marker is a label rather than content, so the " +
+					"digits are not read out as part of the sentence.")
+				l.Item().Column(func(sub *sanur.ColumnBuilder) {
+					sub.Spacing(6)
+					sub.Item().Text("That a sublist belongs to the item introducing it:")
+					sub.Item().List(func(inner *sanur.ListBuilder) {
+						inner.Lettered().Spacing(4).Gutter(12)
+						inner.MarkerStyle(
+							sanur.TextStyle().Family(family).Size(8.5).Color(muted))
+						inner.Item().StyledText("nested one level,",
+							sanur.TextStyle().Family(family).Size(9).Color(muted))
+						inner.Item().StyledText("and lettered rather than numbered.",
+							sanur.TextStyle().Family(family).Size(9).Color(muted))
+					})
+				})
+			})
+
 			c.Item().Tag(sanur.Heading2).StyledText("Links",
 				sanur.TextStyle().Family(family).Size(13).Bold().Color(ink))
 
@@ -278,28 +309,35 @@ func limitations(c *sanur.ColumnBuilder) {
 		col.Item().Tag(sanur.Heading2).StyledText("What this does not cover",
 			sanur.TextStyle().Family(family).Size(12).Bold().Color(ink))
 
-		for _, note := range []string{
-			"Tagging is not conformance. A document can carry a flawless structure and " +
-				"still fail on contrast, or on colour used as the only way to tell two " +
-				"things apart — neither of which a layout engine can judge.",
-			"A paragraph split across a page break becomes two structure elements, so a " +
-				"reader announces two paragraphs.",
-			"Form fields, notes and highlights are absent, so a tagged document cannot " +
-				"yet contain an accessible form.",
-			"Everything above is checked two ways: sanur's own tests read the structure " +
-				"back out of the object graph, and veraPDF validates the file against " +
-				"PDF/UA-1. The second found six defects the first could not see.",
-		} {
-			col.Item().Row(func(r *sanur.RowBuilder) {
-				r.Spacing(6)
-				// The bullet is decoration; the words are the content. Marking it so
-				// keeps a reader from announcing a bullet before every item.
-				r.ConstantItem(9).Decoration().StyledText("\u2022",
-					sanur.TextStyle().Family(family).Size(8.5).Color(muted))
-				r.RelativeItem(1).StyledText(note,
+		// A list, rather than a column of rows with a bullet in the left one. The
+		// difference is entirely in the structure: this way a reader announces "list of
+		// four items, item one" and can skip the rest, where the hand-built version
+		// would be four unrelated paragraphs with a decorative dot beside each.
+		col.Item().List(func(l *sanur.ListBuilder) {
+			l.Bulleted().Spacing(7).Gutter(9).MarkerSpace(5)
+			// The same line height as the bodies below: a marker is text, so its line
+			// height is what puts its baseline on the item's first line rather than
+			// above it.
+			l.MarkerStyle(sanur.TextStyle().Family(family).Size(8.5).Color(muted).
+				LineHeight(1.4))
+
+			for _, note := range []string{
+				"Tagging is not conformance. A document can carry a flawless structure " +
+					"and still fail on contrast, or on colour used as the only way to " +
+					"tell two things apart — neither of which a layout engine can judge.",
+				"A paragraph split across a page break becomes two structure elements, " +
+					"so a reader announces two paragraphs.",
+				"Form fields, notes and highlights are absent, so a tagged document " +
+					"cannot yet contain an accessible form.",
+				"Everything above is checked two ways: sanur's own tests read the " +
+					"structure back out of the object graph, and veraPDF validates the " +
+					"file against PDF/UA-1. The second found six defects the first " +
+					"could not see.",
+			} {
+				l.Item().StyledText(note,
 					sanur.TextStyle().Family(family).Size(8.5).Color(muted).LineHeight(1.4))
-			})
-		}
+			}
+		})
 	})
 }
 
