@@ -59,7 +59,7 @@ cover-func: cover
 	go tool cover -func=coverage.out
 
 .PHONY: examples
-examples: invoice images report charts themed print scripts concurrent accessible
+examples: invoice images report charts themed print scripts concurrent accessible newsletter
 
 .PHONY: invoice
 invoice:
@@ -102,6 +102,11 @@ concurrent:
 .PHONY: accessible
 accessible:
 	go run ./examples/accessible accessible.pdf
+
+# A full-width masthead over three columns of text that flows through them.
+.PHONY: newsletter
+newsletter:
+	go run ./examples/newsletter newsletter.pdf
 
 .PHONY: clean
 clean:

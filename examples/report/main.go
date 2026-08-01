@@ -180,43 +180,6 @@ func main() {
 			})
 
 			c.Item().Element(panel("Regional detail", regionTable(regions)))
-		})
-	})
-
-	// --- Sheet two: two-column article -----------------------------------
-	doc.Page(func(p *sanur.Page) {
-		// Only the differences from the template: looser leading for prose, and a
-		// header naming this section.
-		p.DefaultTextStyle(sanur.TextStyle().Size(9.5).Color(ink).LineHeight(1.35))
-		p.Header().Element(reportHeader("Operating review", "Q2 2026 · Confidential"))
-
-		p.Content().Column(func(c *sanur.ColumnBuilder) {
-			c.Spacing(16)
-
-			c.Item().Bookmark("Operating review").Element(
-				sectionTitle("Operating review"))
-
-			// A pull quote spanning the full width before the columns begin.
-			c.Item().Background(surface).BorderLeft(3, accent).PaddingXY(16, 14).
-				RichText(func(tb *sanur.TextBuilder) {
-					tb.StyledSpan("“Margin compression is entirely mix-driven. ",
-						sanur.TextStyle().Size(12).Italic().Color(ink))
-					tb.StyledSpan("Unit economics in every established market improved "+
-						"quarter on quarter.”",
-						sanur.TextStyle().Size(12).Italic().Color(muted))
-				})
-
-			// Sanur has no multi-column text flow, so genuine newspaper columns
-			// are not available. Splitting the prose into two column elements
-			// side by side is the honest approximation: each side paginates
-			// independently rather than the text snaking from one to the other.
-			c.Item().Row(func(r *sanur.RowBuilder) {
-				r.Spacing(20)
-				r.RelativeItem(1).Element(article(leftColumnBody()))
-				r.RelativeItem(1).Element(article(rightColumnBody()))
-			})
-
-			c.Item().LineHorizontal(1, hairline)
 
 			c.Item().Row(func(r *sanur.RowBuilder) {
 				r.Spacing(18)
@@ -232,6 +195,44 @@ func main() {
 				})))
 			})
 		})
+	})
+
+	// --- Sheet two: two-column article -----------------------------------
+	doc.Page(func(p *sanur.Page) {
+		// Only the differences from the template: looser leading for prose, and a
+		// header naming this section.
+		p.DefaultTextStyle(sanur.TextStyle().Size(9.5).Color(ink).LineHeight(1.35))
+		p.Header().Element(reportHeader("Operating review", "Q2 2026 · Confidential"))
+
+		// Real columns: the prose is one sequence and the engine decides where it
+		// crosses from the left track to the right. Nothing below says which half of
+		// the article goes where, because nothing has to.
+		p.Columns(2).ColumnSpacing(20)
+
+		// The title and the pull quote run the full width above the columns. They are
+		// drawn on the first sheet of this definition only, which is what makes them a
+		// lead-in rather than a header.
+		p.Spanning().PaddingBottom(16).Column(func(c *sanur.ColumnBuilder) {
+			c.Spacing(16)
+
+			c.Item().Bookmark("Operating review").Element(
+				sectionTitle("Operating review"))
+
+			c.Item().Background(surface).BorderLeft(3, accent).PaddingXY(16, 14).
+				RichText(func(tb *sanur.TextBuilder) {
+					tb.StyledSpan("“Margin compression is entirely mix-driven. ",
+						sanur.TextStyle().Size(12).Italic().Color(ink))
+					tb.StyledSpan("Unit economics in every established market improved "+
+						"quarter on quarter.”",
+						sanur.TextStyle().Size(12).Italic().Color(muted))
+				})
+		})
+
+		// Nothing but prose here. The risks and outlook panels sit on the previous
+		// sheet instead, at full width: a panel a single column wide would be split
+		// by a column break the same way a page break splits one, leaving its heading
+		// at the foot of one track and its bullets at the head of the next.
+		p.Content().Element(article(articleBody()))
 	})
 
 	// --- Sheet three: landscape appendix ---------------------------------
@@ -707,7 +708,12 @@ func (s *sparkline) Draw(canvas core.Canvas, available core.Size) {
 
 // --- Copy ------------------------------------------------------------------
 
-func leftColumnBody() []string {
+// articleBody is the prose of the operating review, in reading order.
+//
+// It used to be two functions, one per column, because there was nothing to flow the
+// text between them. Splitting copy by hand is the thing multi-column layout exists to
+// avoid: the split has to be redone whenever a sentence changes.
+func articleBody() []string {
 	return []string{
 		"Demand:",
 		"Bookings grew 12.4% against Q1 on broadly flat sales headcount, which is " +
@@ -722,11 +728,6 @@ func leftColumnBody() []string {
 		"Net revenue retention held at 114%. Gross churn improved to 2.1%, its " +
 			"lowest level on record, helped by the migration of the last cohort of " +
 			"accounts off the legacy billing path.",
-	}
-}
-
-func rightColumnBody() []string {
-	return []string{
 		"Margin:",
 		"Gross margin fell 180 basis points to 61.3%. The entire movement is " +
 			"attributable to mix: the fastest-growing regions carry a higher " +
@@ -739,6 +740,30 @@ func rightColumnBody() []string {
 		"Operating expense grew 4% while revenue grew 12%, giving the first " +
 			"quarter of genuine operating leverage since the platform rebuild. CAC " +
 			"payback shortened to 14 months.",
+		"Sales and marketing fell to 38% of revenue from 43%, almost entirely " +
+			"through the shortened trial rather than through reduced spend. The " +
+			"absolute figure was flat quarter on quarter.",
+		"Cash:",
+		"Free cash flow turned positive for the first time, at $310k against an " +
+			"outflow of $1.2M in Q1. Around a third of the swing is timing on annual " +
+			"prepayments and will reverse in Q3; the remainder is durable.",
+		"Runway now stands at 26 months on the current plan, or indefinitely on the " +
+			"flat-headcount case. The board has asked for the hiring plan to be " +
+			"reforecast against the latter before the September meeting.",
+		"Headcount:",
+		"Ended the quarter at 84, up four. Two senior engineering offers are out " +
+			"and both are expected to sign in July, which would put the platform " +
+			"team at its planned size two months ahead of schedule.",
+		"Attrition was one voluntary leaver, the lowest in eight quarters. The " +
+			"engineering compensation review completed in May appears to have " +
+			"settled the two roles that were consistently below band.",
+		"Product:",
+		"The billing migration is complete and the legacy path has been switched " +
+			"off, retiring roughly nine thousand lines of code and the last of the " +
+			"scheduled maintenance windows.",
+		"The partner integration guide slipped a fortnight and now lands in early " +
+			"July. Nothing depends on it that is not itself in July, so the slip is " +
+			"absorbed rather than passed on.",
 	}
 }
 

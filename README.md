@@ -421,6 +421,55 @@ sideways label wants — about a corner, anything turned more than a few degrees
 swings off the page. Text inside a `Rotate` does not wrap, since a rotated
 element is measured against unbounded space.
 
+### Columns
+
+`Columns` divides a sheet into tracks the content flows through. It fills the first,
+carries on into the second, and only when the last is full does a new sheet begin.
+
+```go
+doc.Page(func(p *sanur.Page) {
+	p.Size(sanur.A4).Margin(40)
+	p.Columns(3).ColumnSpacing(16).ColumnRule(0.5, sanur.Grey300)
+
+	// Full width, above the columns, on the first sheet only.
+	p.Spanning().PaddingBottom(12).Tag(sanur.Heading1).
+		StyledText("A headline over three columns", sanur.TextStyle().Size(28).Bold())
+
+	p.Content().Column(func(c *sanur.ColumnBuilder) {
+		for _, paragraph := range article {
+			c.Item().Text(paragraph)
+		}
+	})
+})
+```
+
+A column is a region content flows into, and the engine already knows how to fill a
+region and continue in the next one — a paragraph breaking between columns is the same
+event as one breaking between sheets, resolved by the same three-state answer from
+`Measure`. That is why this is a property of the page rather than an element, and why
+nothing in the code above says where a break should go.
+
+`ColumnRule` draws a hairline down the middle of each gap. It stops at the depth the
+columns were filled to, so a half-empty final sheet gets no rule below its text, and it
+is marked as decoration in a tagged document.
+
+`Spanning` is the full-width opening an article or newsletter needs, since content that
+spans the columns cannot also flow through them. It is drawn on the first sheet of the
+definition and nowhere else — that is what separates it from a header, which repeats.
+It is content, so it lands in the structure tree ahead of the columns.
+
+What columns do not do:
+
+- **Balance.** Each track is filled before the next is started, so the last one is as
+  short as the content leaves it. Evening them out means knowing the total before placing
+  any of it, which a streaming layout cannot do.
+- **Vary within a definition.** Every sheet of one definition has the same number of
+  tracks. Use a second definition for a different arrangement; `EveryPage` keeps the
+  furniture shared.
+- **Hold anything wider than one track.** An element that will not fit a column can never
+  be placed, since every column on every sheet is the same size, so generation fails and
+  names the box it would not go in. Put it in `Spanning`, or in its own page definition.
+
 ### Tables
 
 A table is a column of rows sharing one column specification, which is what keeps
@@ -805,19 +854,20 @@ c.Item().Size(160, 60).Clip().Image(img)   // cropped, not squashed
 
 ```
 make examples     # or: make invoice / images / report / charts / themed
-                  #     make print / scripts / concurrent / accessible
+                  #     make print / scripts / concurrent / accessible / newsletter
 ```
 
 | Example | What it covers |
 | --- | --- |
 | `examples/invoice` | A table that paginates with a repeating header row, a DRAFT overlay, repeated header and footer, page numbering, right-aligned currency |
 | `examples/images` | All four loading routes, the four fit modes side by side, cropping, pooled logos in a table |
-| `examples/report` | `EveryPage` furniture, a table of contents that is clickable *and* prints the page each section landed on, stat tiles, sparklines, justified two-column prose, mixed portrait and landscape sheets |
+| `examples/report` | `EveryPage` furniture, a table of contents that is clickable *and* prints the page each section landed on, stat tiles, sparklines, a two-column article with a spanning pull quote, mixed portrait and landscape sheets |
 | `examples/charts` | Every chart type, negative values across all of them, styling overrides, and charts nested in other layout |
 | `examples/themed` | One document, two JSON themes. Contains no colour, font, size or margin literals at all |
 | `examples/print` | Press-ready CMYK: process inks, tint ramps, the two blacks, a duotone, both spaces on one page, and crop marks on a bleed sheet |
 | `examples/accessible` | A PDF/UA-1 conformant document: declared headings, a described figure, a table with real header cells, furniture marked as decoration, and an embedded font because conformance requires one |
 | `examples/concurrent` | 64 invoices generated in parallel from one shared theme, compared byte for byte against the same 64 generated one at a time |
+| `examples/newsletter` | A masthead spanning three columns of prose that flows through them and onto a second sheet, hairlines between the tracks, justified text, a contents panel inside a column |
 | `examples/scripts` | Twenty languages from one registered font — including Hebrew, Arabic, Persian and Urdu — subsetted 20× smaller than the files it came from, with the same text in a built-in font for comparison |
 
 The report example is the one to read for complex layout. There is no chart
@@ -985,20 +1035,20 @@ because they are not interchangeable: which fonts a runner has decides which che
 run, and `make skipped` reports what did not into the run summary rather than letting a
 green tick stand for less than it appears to.
 
-650 tests across the nine library packages, at 95.0% statement coverage (the build tooling has its own tests and is measured separately):
+674 tests across the nine library packages, at 95.1% statement coverage (the build tooling has its own tests and is measured separately):
 
 | Package | Statements | Covered | |
 | --- | --- | --- | --- |
 | `core` | 288 | 283 | 98.3% |
 | `text` | 359 | 349 | 97.2% |
+| `sanur` (root) | 634 | 610 | 96.2% |
 | `internal/pdfobj` | 184 | 176 | 95.7% |
-| `sanur` (root) | 563 | 539 | 95.7% |
 | `elements` | 740 | 706 | 95.4% |
 | `fonts` | 502 | 474 | 94.4% |
 | `theme` | 181 | 170 | 93.9% |
 | `chart` | 479 | 448 | 93.5% |
 | `render` | 819 | 764 | 93.3% |
-| **Total** | **4115** | **3909** | **95.0%** |
+| **Total** | **4186** | **3980** | **95.1%** |
 
 Coverage is measured with `-coverpkg` across the whole module rather than
 per-package, because much of `render` is exercised by the root package's
@@ -1097,7 +1147,10 @@ whatever still does.
   (Hebrew, Arabic, Persian and Urdu are handled — see Fonts above)
 - Subsetting of PostScript-outline fonts — a `.otf` with CFF outlines is embedded
   whole, while TrueType outlines are subsetted
-- Multi-column text flow
+- Keeping a block together across a break: a panel or a heading with its first
+  paragraph can be split by a column or page boundary, and there is no way to say it
+  must not be
+- Balanced columns — each track is filled before the next is started (see Columns above)
 - Stacked chart series, dual axes, time-based category axes, scatter and radar plots
 - Annotations beyond links: notes, highlights, form fields — which also means a tagged
   document cannot yet contain an accessible form

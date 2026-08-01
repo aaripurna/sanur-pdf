@@ -49,6 +49,7 @@ var examples = []struct {
 	{name: "themed", pkg: "./examples/themed", minPages: 1},
 	{name: "print", pkg: "./examples/print", minPages: 1, maxPages: 1},
 	{name: "concurrent", pkg: "./examples/concurrent", minPages: 1},
+	{name: "newsletter", pkg: "./examples/newsletter", minPages: 2, maxPages: 2},
 	{
 		// Needs a font: a conforming tagged document embeds every font it uses, so this
 		// example cannot fall back to the built-in faces the way the others do.

@@ -39,6 +39,15 @@
 // holding a five-hundred-row table becomes a dozen sheets with the header on every one,
 // with no configuration. EveryPage sets furniture shared across several definitions.
 //
+// # Columns
+//
+// [Page.Columns] divides a sheet into tracks the content flows through: it fills the
+// first, carries on into the second, and only when the last is full does a new sheet
+// begin. A paragraph breaking between columns is the same event as one breaking between
+// sheets, handled by the same mechanism, so no element has to know columns exist.
+// [Page.Spanning] is the full-width lead-in above them, for the headline an article
+// opens with.
+//
 // # How layout works
 //
 // Everything rests on core.Element, which has two methods: Measure reports what an

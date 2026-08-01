@@ -2,6 +2,7 @@ package sanur
 
 import (
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/aaripurna/sanur-pdf/core"
@@ -340,23 +341,48 @@ func (d *Document) layoutPage(
 			return 0, err
 		}
 
-		contentSpace := core.Size{
-			Width:  inner.Width,
-			Height: inner.Height - furniture.headerHeight - furniture.footerHeight,
-		}
-		if contentSpace.Height <= 0 {
+		contentHeight := inner.Height - furniture.headerHeight - furniture.footerHeight
+		if contentHeight <= 0 {
 			return 0, fmt.Errorf(
 				"header (%.1f) and footer (%.1f) leave no room for content in %.1f points",
 				furniture.headerHeight, furniture.footerHeight, inner.Height)
 		}
 
-		contentPlan := page.content.Measure(contentSpace)
+		// The lead-in belongs to the first sheet only, and takes its space out of the
+		// columns before they are divided up.
+		spanning := core.EmptyRender()
+		if sheets == 1 {
+			spanning = page.spanning.Measure(core.Size{
+				Width:  inner.Width,
+				Height: contentHeight,
+			})
+			if !spanning.Full() {
+				return 0, fmt.Errorf(
+					"content spanning the columns does not fit the %.1fx%.1f above them: %s",
+					inner.Width, contentHeight, spanning.WrapReason)
+			}
+			contentHeight -= spanning.Size.Height
+			if contentHeight <= 0 {
+				return 0, fmt.Errorf(
+					"content spanning the columns takes all %.1f points, leaving them nothing",
+					spanning.Size.Height)
+			}
+		}
+
+		columns, err := page.columnLayout(inner.Width, contentHeight)
+		if err != nil {
+			return 0, err
+		}
+
+		// The first column is measured before a sheet is committed to, so content
+		// that can never fit is reported without emitting a page for it.
+		contentPlan := page.content.Measure(columns.box)
 		if contentPlan.Wrapped() {
-			// The content did not fit even though this sheet is empty of content,
-			// so no future sheet will be roomier either.
+			// The content did not fit even though this column is empty, so no
+			// future column will be roomier either.
 			return 0, fmt.Errorf(
 				"content does not fit in the available %.1fx%.1f: %s",
-				contentSpace.Width, contentSpace.Height, contentPlan.WrapReason)
+				columns.box.Width, columns.box.Height, contentPlan.WrapReason)
 		}
 
 		canvas, closer, err := d.newCanvas(builder, page.size)
@@ -367,7 +393,11 @@ func (d *Document) layoutPage(
 			canvas = recordDestinations(canvas, *pageNumber, record)
 		}
 
-		d.drawSheet(canvas, page, inner, furniture, contentPlan.Size, sheets == 1)
+		filled, finished, err := d.drawSheet(
+			canvas, page, inner, furniture, spanning, columns, contentPlan, sheets == 1)
+		if err != nil {
+			return 0, err
+		}
 
 		if err := canvas.Err(); err != nil {
 			return 0, err
@@ -376,19 +406,19 @@ func (d *Document) layoutPage(
 			return 0, err
 		}
 
-		if contentPlan.Full() {
+		if finished {
 			return sheets, nil
 		}
 
-		// A partial render of zero height means the sheet carried none of the
-		// content — legitimate exactly once, for a page break. Twice running
-		// means the layout is not advancing and would loop until the cap.
-		if contentPlan.Size.Height < core.Epsilon {
+		// A sheet that carried none of the content is legitimate exactly once, for
+		// a page break. Twice running means the layout is not advancing and would
+		// loop until the cap.
+		if filled < core.Epsilon {
 			stalled++
 			if stalled > 1 {
 				return 0, fmt.Errorf(
 					"layout stalled: two consecutive pages rendered no content in %.1fx%.1f",
-					contentSpace.Width, contentSpace.Height)
+					columns.box.Width, columns.box.Height)
 			}
 		} else {
 			stalled = 0
@@ -441,14 +471,18 @@ func (d *Document) newCanvas(
 }
 
 // drawSheet paints one sheet: background, header, content, footer.
+// drawSheet paints one sheet and reports how deep its columns were filled and whether
+// the page definition is finished with them.
 func (d *Document) drawSheet(
 	canvas core.Canvas,
 	page *Page,
 	inner core.Size,
 	furniture furnitureSizes,
-	contentSize core.Size,
+	spanning core.SpacePlan,
+	columns columnLayout,
+	firstPlan core.SpacePlan,
 	firstSheet bool,
-) {
+) (float64, bool, error) {
 	if page.background.Visible() {
 		canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
 		canvas.DrawRect(core.Position{}, page.size, page.background)
@@ -478,10 +512,24 @@ func (d *Document) drawSheet(
 		canvas.Restore()
 	}
 
-	canvas.Save()
-	canvas.Translate(origin.Add(0, furniture.headerHeight))
-	page.content.Draw(canvas, core.Size{Width: inner.Width, Height: contentSize.Height})
-	canvas.Restore()
+	contentTop := origin.Add(0, furniture.headerHeight)
+
+	if firstSheet && spanning.Size.Height > 0 {
+		canvas.Save()
+		canvas.Translate(contentTop)
+		page.spanning.Draw(canvas, core.Size{
+			Width:  inner.Width,
+			Height: spanning.Size.Height,
+		})
+		canvas.Restore()
+
+		contentTop = contentTop.Add(0, spanning.Size.Height)
+	}
+
+	filled, finished, err := drawColumns(canvas, page, contentTop, columns, firstPlan)
+	if err != nil {
+		return 0, false, err
+	}
 
 	if furniture.footerHeight > 0 {
 		// The footer is pinned to the bottom margin rather than following the
@@ -498,6 +546,98 @@ func (d *Document) drawSheet(
 	canvas.Save()
 	drawFurniture(canvas, furnitureCanvas, page.overlay, page.size)
 	canvas.Restore()
+
+	return filled, finished, nil
+}
+
+// drawColumns flows the content through one sheet's columns.
+//
+// Each column is measured immediately before it is drawn, because drawing is what
+// advances the content's progress: the plan for column two only exists once column one
+// has been committed. That is the same sequence the sheet loop runs, one level down,
+// which is why a paragraph splits between columns without knowing columns exist.
+//
+// It returns the depth the deepest column reached, and whether the content is spent.
+func drawColumns(
+	canvas core.Canvas,
+	page *Page,
+	origin core.Position,
+	columns columnLayout,
+	firstPlan core.SpacePlan,
+) (float64, bool, error) {
+	plan := firstPlan
+	filled := 0.0
+	finished := false
+
+	for i, x := range columns.offsets {
+		if i > 0 {
+			plan = page.content.Measure(columns.box)
+			if plan.Wrapped() {
+				// Every column on every sheet is this size, so content that will not
+				// start in an empty one will not start anywhere.
+				return 0, false, fmt.Errorf(
+					"content does not fit in a %.1fx%.1f column: %s",
+					columns.box.Width, columns.box.Height, plan.WrapReason)
+			}
+		}
+
+		canvas.Save()
+		canvas.Translate(origin.Add(x, 0))
+		page.content.Draw(canvas, core.Size{
+			Width:  columns.box.Width,
+			Height: plan.Size.Height,
+		})
+		canvas.Restore()
+
+		filled = math.Max(filled, plan.Size.Height)
+
+		if plan.Full() {
+			// Everything left fitted in this column, so the remaining ones stay empty
+			// and the definition is done.
+			finished = true
+			break
+		}
+	}
+
+	drawColumnRule(canvas, page, origin, columns, filled)
+
+	return filled, finished, nil
+}
+
+// drawColumnRule draws the hairline between columns, if one was asked for.
+//
+// It spans the depth the columns were filled to rather than the whole content area, so
+// a final sheet holding two lines does not get a rule down the rest of the page.
+func drawColumnRule(
+	canvas core.Canvas,
+	page *Page,
+	origin core.Position,
+	columns columnLayout,
+	filled float64,
+) {
+	if !page.rule.visible() || columns.count() < 2 || filled <= 0 {
+		return
+	}
+
+	// A rule carries no meaning, so a reader should not be told it is there.
+	canvas.BeginMarked(core.Mark{Role: core.RoleArtifact})
+	defer canvas.EndMarked()
+
+	canvas.Save()
+	defer canvas.Restore()
+	canvas.Translate(origin)
+
+	for _, x := range columns.offsets[1:] {
+		// Centred in the gap, which starts where the previous column ended.
+		center := x - page.columnSpacing/2
+
+		canvas.DrawLine(
+			core.Position{X: center},
+			core.Position{X: center, Y: filled},
+			page.rule.color,
+			page.rule.width,
+		)
+	}
 }
 
 // drawFurniture draws a running element inside an artifact scope.
@@ -537,7 +677,26 @@ type Page struct {
 	// else, and are redrawn on every sheet like the header and footer.
 	watermark *elements.Container
 	overlay   *elements.Container
+
+	// spanning sits above the columns on the first sheet only, across their whole
+	// width. It is content, not furniture: it is drawn once.
+	spanning *elements.Container
+
+	// columns divides the content area into tracks the content flows through, in
+	// reading order, before it moves to the next sheet.
+	columns       int
+	columnSpacing float64
+	rule          columnRule
 }
+
+// columnRule is the optional hairline drawn down the middle of each gap.
+type columnRule struct {
+	width float64
+	color core.Color
+}
+
+// visible reports whether the rule would draw anything.
+func (r columnRule) visible() bool { return r.width > 0 && r.color.Visible() }
 
 type margins struct {
 	top, right, bottom, left float64
@@ -545,14 +704,17 @@ type margins struct {
 
 func newPage() *Page {
 	return &Page{
-		size:       A4,
-		background: White,
-		style:      TextStyle().Build(),
-		header:     elements.NewContainer(),
-		content:    elements.NewContainer(),
-		footer:     elements.NewContainer(),
-		watermark:  elements.NewContainer(),
-		overlay:    elements.NewContainer(),
+		size:          A4,
+		background:    White,
+		style:         TextStyle().Build(),
+		columns:       1,
+		columnSpacing: defaultColumnSpacing,
+		header:        elements.NewContainer(),
+		content:       elements.NewContainer(),
+		footer:        elements.NewContainer(),
+		watermark:     elements.NewContainer(),
+		overlay:       elements.NewContainer(),
+		spanning:      elements.NewContainer(),
 	}
 }
 
@@ -626,6 +788,107 @@ func (p *Page) Overlay() *Container {
 }
 
 // contentArea is the sheet minus its margins.
+// Spanning returns the container for content above the columns, across all of them.
+//
+//	p.Columns(3)
+//	p.Spanning().Text("A headline over three columns")
+//
+// This is the full-width lead-in an article or a newsletter opens with: a headline and a
+// standfirst over the columns, with the body flowing beneath. It is drawn on the first
+// sheet of the page definition and nowhere else, which is what distinguishes it from a
+// header — a headline repeated on every sheet would be furniture, and this is content. It
+// is tagged as content too, so it lands in the structure in reading order ahead of the
+// columns.
+//
+// It has to fit on that first sheet: content that spans columns cannot itself be split
+// between them, so generation fails rather than paginating it somewhere surprising.
+func (p *Page) Spanning() *Container {
+	return newContainer(p.spanning.Set, p.style)
+}
+
+// Columns divides the content area into n tracks that the content flows through.
+//
+//	p.Columns(2)
+//
+// The content fills the first track, carries on into the second, and only then moves
+// to the next sheet — so a paragraph breaks between columns exactly as it breaks
+// between pages, through the same mechanism. The header, the footer and the watermark
+// are properties of the sheet and stay full width.
+//
+// This is a property of the page rather than of an element, because a column is a
+// region that content flows into, and the engine already knows how to fill a region
+// and continue in the next one. A two-column block sitting inside a one-column page —
+// a full-width headline above the columns — is not this, and is not supported: see
+// Columns in the README for the shape to use instead.
+func (p *Page) Columns(n int) *Page {
+	p.columns = n
+	return p
+}
+
+// ColumnSpacing sets the gap between columns, which defaults to 18 points.
+func (p *Page) ColumnSpacing(v float64) *Page {
+	p.columnSpacing = v
+	return p
+}
+
+// ColumnRule draws a vertical hairline down the middle of each gap.
+//
+// It spans the depth the columns are filled to on that sheet rather than the whole
+// content area, so a half-empty final sheet has no rule dangling below its text. The
+// rule is decoration, and is marked as an artifact in a tagged document.
+func (p *Page) ColumnRule(width float64, c core.Color) *Page {
+	p.rule = columnRule{width: width, color: c}
+	return p
+}
+
+// defaultColumnSpacing is a gap wide enough to read two columns of body text as
+// separate at ordinary sizes, and is what CSS would call 1em at 18 points.
+const defaultColumnSpacing = 18
+
+// columnLayout is the geometry of one sheet's columns: the box each gets, and where
+// each starts.
+type columnLayout struct {
+	box     core.Size
+	offsets []float64
+}
+
+// count returns the number of columns.
+func (c columnLayout) count() int { return len(c.offsets) }
+
+// columnLayout divides width into the page's columns.
+//
+// height is the space left after the furniture, and is the same for every column: a
+// column is a full-depth region, which is what makes the wrap check meaningful. If
+// content will not start in an empty column it will not start in any of them.
+func (p *Page) columnLayout(width, height float64) (columnLayout, error) {
+	if p.columns < 1 {
+		return columnLayout{}, fmt.Errorf(
+			"a page needs at least one column, not %d", p.columns)
+	}
+	if p.columnSpacing < 0 {
+		return columnLayout{}, fmt.Errorf(
+			"column spacing cannot be negative, got %.1f", p.columnSpacing)
+	}
+
+	n := float64(p.columns)
+	track := (width - (n-1)*p.columnSpacing) / n
+	if track <= 0 {
+		return columnLayout{}, fmt.Errorf(
+			"%d columns with %.1f between them leave no room in %.1f points",
+			p.columns, p.columnSpacing, width)
+	}
+
+	offsets := make([]float64, p.columns)
+	for i := range offsets {
+		offsets[i] = float64(i) * (track + p.columnSpacing)
+	}
+
+	return columnLayout{
+		box:     core.Size{Width: track, Height: height},
+		offsets: offsets,
+	}, nil
+}
+
 func (p *Page) contentArea() core.Size {
 	return core.Size{
 		Width:  p.size.Width - p.margin.left - p.margin.right,
@@ -638,6 +901,7 @@ func (p *Page) reset() {
 	for _, part := range p.parts() {
 		core.ResetTree(part, true)
 	}
+	core.ResetTree(p.spanning, true)
 	core.ResetTree(p.content, true)
 }
 
@@ -659,6 +923,7 @@ func (p *Page) applyContext(ctx core.PageContext) {
 	for _, part := range p.parts() {
 		core.ApplyPageContext(part, ctx)
 	}
+	core.ApplyPageContext(p.spanning, ctx)
 	core.ApplyPageContext(p.content, ctx)
 }
 
