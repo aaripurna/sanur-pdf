@@ -692,8 +692,14 @@ func rtlDocument(t *testing.T, name string, lines ...string) []byte {
 // read the ToUnicode stream back can have it in plain text.
 func rtlDocumentWith(t *testing.T, name string, compress bool, lines ...string) []byte {
 	t.Helper()
+	return rtlDocumentUsing(t, embeddedFont(t, name), compress, lines...)
+}
 
-	face := embeddedFont(t, name)
+// rtlDocumentUsing is rtlDocumentWith on a caller-supplied face, for the one test that
+// needs to control what the font's character map says.
+func rtlDocumentUsing(t *testing.T, face core.Font, compress bool, lines ...string) []byte {
+	t.Helper()
+
 	if face.AdvanceOf('م', 12) <= 0 || face.AdvanceOf('ﻣ', 12) <= 0 {
 		t.Skip("the test font has no Arabic presentation forms")
 	}
@@ -770,12 +776,41 @@ func TestRightToLeftTextIsExtractableAsWritten(t *testing.T) {
 	}
 }
 
+// sharedGlyphFace makes two characters resolve to one glyph.
+//
+// That is a real situation, not a contrived one: Arabic yeh and Farsi yeh look the same in
+// medial position and most fonts draw them with a single glyph — Arial gives both U+FEF4
+// and U+FBFF glyph 1012. But not every font does. DejaVu, which is what a Linux machine
+// usually has, gives each of its 5367 mapped characters a glyph of its own, so the
+// condition never arose there and this check quietly did not run on half the machines it
+// exists to protect.
+//
+// Which characters a typeface unifies is a design decision. Whether sanur handles two of
+// them sharing a code is not, so the test states the condition rather than hunting for a
+// font that happens to satisfy it. Everything else stays real: the font program, the
+// shaping, the subsetting and the ToUnicode map are the ones a document would get.
+type sharedGlyphFace struct {
+	core.Font
+	fonts.GlyphSource
+	fonts.Programmable
+
+	// alias resolves to whatever glyph canonical resolves to.
+	alias, canonical rune
+}
+
+func (f sharedGlyphFace) GlyphID(r rune) (uint16, bool) {
+	if r == f.alias {
+		r = f.canonical
+	}
+	return f.GlyphSource.GlyphID(r)
+}
+
 func TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning(t *testing.T) {
-	// Arabic yeh and Farsi yeh are different characters that most fonts draw with one
-	// glyph in medial position, because there they look the same. Identity-H addresses
-	// glyphs, so the two characters share a code and only one can be named in
-	// ToUnicode. That is a limit of the encoding, not something to fix — what can be
-	// fixed is the answer depending on which page was drawn last.
+	// Arabic yeh and Farsi yeh are different characters drawn with one glyph in medial
+	// position, where they look the same. Identity-H addresses glyphs, so the two
+	// characters share a code and only one of them can be named in ToUnicode. That is a
+	// limit of the encoding, not something to fix — what can be fixed is the answer
+	// depending on which page happened to be drawn last.
 	face := embeddedFont(t, "RTLSharedGlyph")
 
 	source, ok := fonts.GlyphSourceOf(face)
@@ -783,10 +818,33 @@ func TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning(t *testing.T) {
 		t.Fatal("an embedded font must expose its glyphs")
 	}
 
-	arabic, hasArabic := source.GlyphID('\ufef4') // yeh medial
-	farsi, hasFarsi := source.GlyphID('\ufbff')   // Farsi yeh medial
-	if !hasArabic || !hasFarsi || arabic != farsi {
-		t.Skip("the test font draws the two yehs with different glyphs")
+	const (
+		arabicMedial = '\ufef4'
+		farsiMedial  = '\ufbff'
+	)
+
+	arabic, hasArabic := source.GlyphID(arabicMedial)
+	if !hasArabic {
+		t.Skip("the test font has no medial yeh")
+	}
+
+	// On a font that already unifies the two this changes nothing; on one that does not,
+	// it is what puts them on the same glyph.
+	program, ok := face.(fonts.Programmable)
+	if !ok {
+		t.Fatal("an embedded font must be able to describe itself to the PDF writer")
+	}
+
+	shared := sharedGlyphFace{
+		Font:         face,
+		GlyphSource:  source,
+		Programmable: program,
+		alias:        farsiMedial,
+		canonical:    arabicMedial,
+	}
+
+	if got, _ := shared.GlyphID(farsiMedial); got != arabic {
+		t.Fatalf("the two yehs still resolve to %d and %d", arabic, got)
 	}
 
 	// Both orders must name the character from the line drawn first.
@@ -798,7 +856,7 @@ func TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning(t *testing.T) {
 		{"arabic first", []string{"عليكم", "دنیا"}, "<064A>"},
 		{"farsi first", []string{"دنیا", "عليكم"}, "<06CC>"},
 	} {
-		data := rtlDocumentWith(t, "RTLShared"+tc.name, false, tc.lines...)
+		data := rtlDocumentUsing(t, shared, false, tc.lines...)
 
 		entry := regexp.MustCompile(`<` + hex4(arabic) + `> (<[0-9A-F]+>)`).FindSubmatch(data)
 		if entry == nil {
@@ -811,8 +869,6 @@ func TestGlyphSharedByTwoCharactersKeepsTheFirstMeaning(t *testing.T) {
 	}
 }
 
-// stripBidiControls removes the directional formatting characters an extraction tool
-// inserts to record which runs were right-to-left.
 func stripBidiControls(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 0x2000 && r <= 0x206F {

@@ -41,3 +41,9 @@ fi
 make race
 
 make cover | tee coverage.txt
+
+echo "### Skipped"
+echo
+echo '```'
+cat skipped.txt
+echo '```'
